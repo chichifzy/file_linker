@@ -213,6 +213,12 @@ export const api = {
       `/fs/transcode?${qs({ share, path })}`,
     ),
   transcodeStatus: (id: string) => request<TranscodeStatus>("GET", `/fs/transcode/${id}`),
+  /** 播放前查一下有没有现成的转码缓存：有就直接播缓存，不必先播原文件再失败 */
+  transcodeLookup: (share: number, path: string) =>
+    request<{ cached: boolean; id: string; status: string; mode?: TranscodeMode; bytes: number }>(
+      "GET",
+      `/fs/transcode/lookup?${qs({ share, path })}`,
+    ),
   mediaList: () => request<MediaCacheList>("GET", "/fs/media"),
   /** 修改转码缓存目录，已有缓存会迁移过去（调用返回时迁移已经完成） */
   setMediaDir: (dir: string) =>

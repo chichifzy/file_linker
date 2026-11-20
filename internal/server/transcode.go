@@ -394,6 +394,49 @@ func validPlaylist(s string) bool {
 		strings.HasSuffix(s, "\n")
 }
 
+// lookupTranscode 只查询是否已有现成的转码缓存，不会创建任务，也不会碰 ffmpeg。
+// 前端在开始播放之前先问一次：命中就直接播缓存，不再「先播原文件、失败后才提示转码」。
+// 改过缓存目录（缓存已迁到新目录）之后，这一步也照样能认出老缓存。
+func (s *Server) lookupTranscode(w http.ResponseWriter, r *http.Request) {
+	miss := func() {
+		writeJSON(w, http.StatusOK, map[string]any{"cached": false})
+	}
+	_, full, _, err := s.resolve(r)
+	if err != nil {
+		miss()
+		return
+	}
+	fi, err := os.Stat(full)
+	if err != nil || fi.IsDir() {
+		miss()
+		return
+	}
+	id := mediaKey(full, fi.Size(), fi.ModTime().UnixNano())
+	mediaMu.Lock()
+	e := mediaEntries[id]
+	status, mode := "", ""
+	if e != nil {
+		status, mode = e.Status, e.Mode
+	}
+	mediaMu.Unlock()
+	// 失败/不存在都当作没有缓存；正在转的交给正常流程（同一条目，可以边转边播）
+	if status != "done" && status != "running" {
+		miss()
+		return
+	}
+	bytes := int64(0)
+	if status == "done" {
+		// 状态是 done 但成品被手动删掉时不算命中
+		if bytes = mediaPlaySize(id); bytes <= 0 {
+			miss()
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cached": true, "id": id, "status": status, "mode": mode, "bytes": bytes,
+	})
+}
+
 // createTranscode 为指定视频创建（或复用）转码任务。
 func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 	if mediaMoving.Load() {
@@ -430,7 +473,9 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			mode := e.Mode
+			name := e.Name
 			mediaMu.Unlock()
+			slog.Info("转码缓存命中", "file", name, "id", id, "status", status)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"id": id, "status": status, "mode": mode, "ready": e.isReady(), "bytes": bytes,
 			})
@@ -469,6 +514,8 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 	}
 	if mode == "copy" {
 		slog.Info("容器不可直接播放，改用无损封装", "file", fi.Name())
+	} else {
+		slog.Info("新建转码任务", "file", fi.Name(), "id", id)
 	}
 	mediaMu.Lock()
 	mediaEntries[id] = e

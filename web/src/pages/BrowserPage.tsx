@@ -565,6 +565,9 @@ function Preview({
   const [mediaError, setMediaError] = useState<{ code: number; message: string } | null>(null);
   const [info, setInfo] = useState<MediaInfo | null>(null);
   const [playSrc, setPlaySrc] = useState(""); // 非空时播放转码结果
+  // 开始播放前先问一次有没有现成缓存，问完才给 <video> 挂 src，
+  // 免得先播原文件失败、闪一下「需要转码」的提示
+  const [srcChecked, setSrcChecked] = useState(false);
   const [transcode, setTranscode] = useState<{
     phase: "idle" | "starting" | "streaming" | "done" | "error";
     mode: "copy" | "encode";
@@ -607,8 +610,49 @@ function Preview({
     setNetSpeed(0);
     setBufferedPct(0);
     setNeedTap(false);
+    setSrcChecked(false);
     if (timer.current) window.clearInterval(timer.current);
   }, [entry.path, entry.size]);
+
+  // 播放前查一次缓存：命中就直接播转码好的 mp4，没有才去播原文件。
+  // 这样「已经转过的视频」再打开是秒开，也不会先失败一次再提示转码。
+  useEffect(() => {
+    if (entry.kind !== "video") {
+      setSrcChecked(true);
+      return;
+    }
+    let alive = true;
+    api
+      .transcodeLookup(share.id, entry.path)
+      .then((r) => {
+        if (!alive || !r.cached) return;
+        if (r.status === "running") {
+          // 还在转：走正常流程，可以边转边播
+          void startTranscode();
+          return;
+        }
+        mediaSize.current = r.bytes || entry.size;
+        speedRef.current = { t: 0, bytes: 0, ema: 0 };
+        setPlaySrc(transcodeURL(r.id));
+        setTranscode({
+          phase: "done",
+          mode: r.mode === "copy" ? "copy" : "encode",
+          percent: 100,
+          readySec: 0,
+          error: "",
+        });
+      })
+      .catch(() => {
+        // 查询失败不影响正常播放，按原样试原文件
+      })
+      .finally(() => {
+        if (alive) setSrcChecked(true);
+      });
+    return () => {
+      alive = false;
+    };
+    // 只在换文件时查一次；startTranscode 每次渲染都是新函数，放进依赖会反复触发
+  }, [share.id, entry.path, entry.kind]);
 
   useEffect(
     () => () => {
@@ -816,7 +860,7 @@ function Preview({
                 <video
                   ref={videoRef}
                   className="viewer-img"
-                  src={playSrc || src}
+                  src={playSrc || (srcChecked ? src : undefined)}
                   controls
                   autoPlay
                   playsInline

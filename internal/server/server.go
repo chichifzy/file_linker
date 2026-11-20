@@ -50,6 +50,8 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	// 视频转码（浏览器解不了的编码转成 H.264）。缓存持久保留，边转边播
 	s.initTranscode()
 	m.Handle("POST /api/fs/transcode", s.requireUser(s.createTranscode))
+	// 播放前只查一次有没有现成缓存（不创建任务），命中就直接播缓存
+	m.Handle("GET /api/fs/transcode/lookup", s.requireUser(s.lookupTranscode))
 	m.Handle("GET /api/fs/transcode/{id}", s.requireUser(s.transcodeStatus))
 	m.Handle("GET /api/fs/transcode/{id}/file", s.requireUser(s.serveTranscode))
 	m.Handle("GET /api/fs/transcode/{id}/hls/{name}", s.requireUser(s.serveHLSFile))
