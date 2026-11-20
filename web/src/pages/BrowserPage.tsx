@@ -569,6 +569,9 @@ function Preview({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   // 缓冲状态与下载速度（字节/秒）。片源是单个文件时按「已缓冲比例 × 文件大小」估算
   const [buffering, setBuffering] = useState(true);
+  // 移动端浏览器可能拦截自动播放（没有静音时 iOS 要求用户手势）。
+  // 这种情况下不能一直显示「正在加载」，要给一个明确的「点击播放」
+  const [needTap, setNeedTap] = useState(false);
   const [netSpeed, setNetSpeed] = useState(0);
   const [bufferedPct, setBufferedPct] = useState(0);
   const speedRef = useRef({ t: 0, bytes: 0, ema: 0 });
@@ -592,6 +595,7 @@ function Preview({
     setBuffering(true);
     setNetSpeed(0);
     setBufferedPct(0);
+    setNeedTap(false);
     if (timer.current) window.clearInterval(timer.current);
   }, [entry.path, entry.size]);
 
@@ -780,23 +784,35 @@ function Preview({
                   controls
                   autoPlay
                   playsInline
-                  preload="metadata"
+                  preload="auto"
                   onLoadStart={() => {
                     speedRef.current = { t: 0, bytes: 0, ema: 0 };
                     setNetSpeed(0);
                     setBufferedPct(0);
                     setBuffering(true);
+                    setNeedTap(false);
                   }}
                   onProgress={sampleBuffer}
                   onWaiting={() => setBuffering(true)}
-                  onStalled={() => setBuffering(true)}
                   onPlaying={() => {
                     setBuffering(false);
+                    setNeedTap(false);
                     setNetSpeed(0);
                   }}
                   onCanPlay={(ev) => {
-                    // 自动播放被拦截时不会触发 playing，这里也收起浮层
-                    if (ev.currentTarget.readyState >= 3) setBuffering(false);
+                    // 自动播放被拦截时不会触发 playing，只会在 paused 上停住。
+                    // 这里主动补一次 play()，被拒就说明需要用户手势，切成「点击播放」
+                    const v = ev.currentTarget;
+                    if (!v.paused) return;
+                    void v.play().catch((err: DOMException) => {
+                      if (err?.name === "NotAllowedError") setNeedTap(true);
+                    });
+                  }}
+                  onTimeUpdate={() => {
+                    // 已经在走了就把「缓冲中 / 点击播放」收起来：Safari 的 stalled 事件很吵，
+                    // 只看时间有没有前进更可靠
+                    setBuffering((b) => (b ? false : b));
+                    setNeedTap((t) => (t ? false : t));
                   }}
                   onLoadedMetadata={(ev) => {
                     sampleBuffer();
@@ -821,12 +837,28 @@ function Preview({
                     }
                   }}
                 />
-                {buffering && !mediaError && (
+                {buffering && !needTap && !mediaError && (
                   <div className="video-buffer">
                     <span className="video-buffer-ring" aria-hidden="true" />
                     <span>{netSpeed > 0 ? `缓冲中 · ${fmtSpeed(netSpeed)}` : "正在加载…"}</span>
                     {bufferedPct > 0 && <span className="video-buffer-pct">已缓冲 {bufferedPct}%</span>}
                   </div>
+                )}
+                {needTap && !mediaError && (
+                  <button
+                    type="button"
+                    className="video-tap-play"
+                    onClick={() => {
+                      const v = videoRef.current;
+                      if (!v) return;
+                      void v
+                        .play()
+                        .then(() => setNeedTap(false))
+                        .catch(() => {});
+                    }}
+                  >
+                    点击播放
+                  </button>
                 )}
               </div>
               {transcode.phase === "streaming" && (
