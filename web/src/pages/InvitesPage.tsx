@@ -48,43 +48,39 @@ export default function InvitesPage() {
         (data.length === 0 ? (
           <p className="muted">还没有邀请码。</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>邀请码</th>
-                <th>状态</th>
-                <th>有效期至</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((inv) => (
-                <tr key={inv.code}>
-                  <td className="code">{inv.code}</td>
-                  <td>
-                    {inv.usedBy ? (
-                      <span className="tag gray">已被 {inv.usedBy} 使用</span>
-                    ) : inv.expiresAt < now ? (
-                      <span className="tag red">已过期</span>
-                    ) : (
-                      <span className="tag green">可用</span>
-                    )}
-                  </td>
-                  <td>{fmtTime(inv.expiresAt)}</td>
-                  <td className="row">
-                    {!inv.usedBy && inv.expiresAt >= now && (
-                      <button className="secondary" onClick={() => copy(inv.code)}>
-                        复制
-                      </button>
-                    )}
-                    <button className="secondary" onClick={() => remove(inv.code)}>
-                      删除
+          <div className="invite-list">
+            <div className="invite-row invite-head">
+              <span>邀请码</span>
+              <span>状态</span>
+              <span>有效期至</span>
+              <span />
+            </div>
+            {data.map((inv) => (
+              <div className="invite-row" key={inv.code}>
+                <span className="invite-code code">{inv.code}</span>
+                <span className="invite-status">
+                  {inv.usedBy ? (
+                    <span className="tag gray">已被 {inv.usedBy} 使用</span>
+                  ) : inv.expiresAt < now ? (
+                    <span className="tag red">已过期</span>
+                  ) : (
+                    <span className="tag green">可用</span>
+                  )}
+                </span>
+                <span className="invite-time">{fmtTime(inv.expiresAt)}</span>
+                <span className="invite-act">
+                  {!inv.usedBy && inv.expiresAt >= now && (
+                    <button className="secondary" onClick={() => copy(inv.code)}>
+                      复制
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  )}
+                  <button className="secondary" onClick={() => remove(inv.code)}>
+                    删除
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
         ))}
     </>
   );

@@ -421,6 +421,23 @@ tbody tr:hover { background: #f8fcfa; }
 .share-name { min-width: 0; overflow-wrap: anywhere; }
 .share-path { min-width: 0; font-weight: 400; overflow-wrap: anywhere; }
 
+/* ---------- 邀请码列表（同样的表格/卡片双形态） ---------- */
+.invite-list {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
+}
+.invite-row {
+  /* 最后一列放「复制 / 删除」，固定宽度让表头与数据行对齐 */
+  display: grid;
+  grid-template-columns: minmax(100px, 0.9fr) minmax(0, 1.2fr) minmax(0, 1.5fr) 136px;
+  gap: 12px; align-items: center; padding: 10px 14px; font-size: 14px;
+}
+.invite-row + .invite-row { border-top: 1px solid #edf3ef; }
+.invite-head { background: var(--primary-softer); color: var(--text-2); font-size: 13px; font-weight: 600; }
+.invite-status { min-width: 0; }
+.invite-time { min-width: 0; font-size: 13px; color: var(--text-2); }
+.invite-act { display: flex; gap: 8px; justify-content: flex-end; }
+
 /* ---------- 转码缓存：卡片式列表（宽屏表格、窄屏卡片，都不用横向滚动） ---------- */
 .cache-stats {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -547,6 +564,20 @@ tbody tr:hover { background: #f8fcfa; }
   .share-name { grid-area: name; font-weight: 600; }
   .share-path { grid-area: path; font-size: 12px; color: var(--text-3); }
   .share-row > button { grid-area: act; justify-self: end; }
+
+  /* 邀请码：码与状态一行，有效期与操作一行 */
+  .invite-head { display: none; }
+  .invite-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "code status"
+      "time act";
+    gap: 6px 10px; padding: 12px 14px;
+  }
+  .invite-code { grid-area: code; overflow-wrap: anywhere; }
+  .invite-status { grid-area: status; justify-self: end; text-align: right; }
+  .invite-time { grid-area: time; font-size: 12px; color: var(--text-3); }
+  .invite-act { grid-area: act; }
 
   /* 转码缓存：窄屏改为卡片式分区，字段位置固定，不再需要左右滑动 */
   .cache-stats { gap: 8px; margin: 12px 0; }
