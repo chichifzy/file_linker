@@ -40,28 +40,49 @@ func (s *Server) listShares(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// quickFolders 返回本机存在的常用文件夹（已解析符号链接）：macOS 为下载、桌面、文稿，Windows 为桌面、下载。
+// quickFolders 返回本机存在的常用文件夹（已解析符号链接）。
+// 优先使用系统记录的路径：Windows 上桌面、下载可以通过“属性 → 位置”搬到其他磁盘，
+// 只按主目录拼接会找不到目录。
 func quickFolders() []quickLink {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	var candidates []quickLink
-	switch runtime.GOOS {
-	case "darwin":
-		candidates = []quickLink{{"下载", "Downloads"}, {"桌面", "Desktop"}, {"文稿", "Documents"}}
-	case "windows":
-		candidates = []quickLink{{"桌面", "Desktop"}, {"下载", "Downloads"}}
+	folders := systemQuickFolders()
+	if len(folders) == 0 {
+		folders = homeQuickFolders()
 	}
 	var list []quickLink
-	for _, c := range candidates {
-		p, err := filepath.EvalSymlinks(filepath.Join(home, c.Path))
+	for _, f := range folders {
+		p, err := filepath.EvalSymlinks(f.Path)
 		if err != nil {
 			continue
 		}
 		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			list = append(list, quickLink{c.Name, p})
+			list = append(list, quickLink{f.Name, p})
 		}
+	}
+	return list
+}
+
+// homeQuickFolders 按“主目录 + 目录名”猜测常用文件夹，作为系统信息不可用时的兜底。
+func homeQuickFolders() []quickLink {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	switch runtime.GOOS {
+	case "darwin":
+		names = []string{"下载:Downloads", "桌面:Desktop", "文稿:Documents"}
+	case "windows":
+		names = []string{"桌面:Desktop", "下载:Downloads"}
+	default:
+		return nil
+	}
+	list := make([]quickLink, 0, len(names))
+	for _, n := range names {
+		name, dir, ok := strings.Cut(n, ":")
+		if !ok {
+			continue
+		}
+		list = append(list, quickLink{name, filepath.Join(home, dir)})
 	}
 	return list
 }
