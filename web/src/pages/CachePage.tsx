@@ -57,49 +57,69 @@ export default function CachePage() {
         缓存放在运行服务的电脑上，默认一直保留，只有在这里删除才会释放空间；删除它不影响共享目录里的原文件。
       </p>
       {data && (
-        <p className="muted">
-          已用 {fmtSize(data.used)}
-          {limit > 0 ? ` / 上限 ${fmtSize(limit)}` : "（不限制容量，永久保留）"}
-          {limit > 0 && "，超出上限时自动淘汰最久未使用的缓存"}
-        </p>
+        <div className="cache-stats">
+          <div className="cache-stat">
+            <b>{data.entries.length}</b>
+            <span>个视频</span>
+          </div>
+          <div className="cache-stat">
+            <b>{fmtSize(data.used)}</b>
+            <span>已用空间</span>
+          </div>
+          <div className="cache-stat">
+            <b>{limit > 0 ? fmtSize(limit) : "不限"}</b>
+            <span>{limit > 0 ? "容量上限" : "永久保留"}</span>
+          </div>
+        </div>
       )}
       {data &&
         (data.entries.length === 0 ? (
           <p className="muted">还没有转码缓存。</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>文件</th>
-                <th>来源</th>
-                <th>占用</th>
-                <th>状态</th>
-                <th>创建时间</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.entries.map((e) => (
-                <tr key={e.id}>
-                  <td>
-                    {e.name}
-                    {e.duration > 0 && <span className="muted"> · {fmtClock(e.duration)}</span>}
-                  </td>
-                  <td className="code path-cell">{e.shareName ? `${e.shareName}/${e.rel}` : e.rel}</td>
-                  <td>{fmtSize(e.bytes)}</td>
-                  <td className={e.status === "error" ? "error" : undefined} title={e.error}>
-                    {statusText(e)}
-                  </td>
-                  <td>{new Date(e.created * 1000).toLocaleString()}</td>
-                  <td>
+          <div className="cache-list">
+            <div className="cache-head" aria-hidden="true">
+              <span>文件</span>
+              <span>占用</span>
+              <span>状态</span>
+              <span>创建时间</span>
+              <span />
+            </div>
+            {data.entries.map((e) => {
+              const src = e.shareName ? `${e.shareName}/${e.rel}` : e.rel;
+              return (
+                <div className="cache-item" key={e.id}>
+                  <div className="cache-main">
+                    <div className="cache-name">
+                      <span className="cache-title">{e.name}</span>
+                      {e.duration > 0 && <span className="cache-dur">{fmtClock(e.duration)}</span>}
+                    </div>
+                    <div className="cache-src" title={src}>
+                      {src}
+                    </div>
+                    {e.status === "running" && (
+                      <div className="cache-bar">
+                        <i style={{ width: `${Math.min(100, Math.max(0, e.percent))}%` }} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="cache-size">{fmtSize(e.bytes)}</div>
+                  <div className="cache-status">
+                    <span className={`tag ${statusTone(e)}`} title={e.error}>
+                      {statusText(e)}
+                    </span>
+                  </div>
+                  <div className="cache-created" title={new Date(e.created * 1000).toLocaleString()}>
+                    {fmtWhen(e.created)}
+                  </div>
+                  <div className="cache-act">
                     <button className="secondary" onClick={() => removeOne(e)} disabled={action.busy}>
                       删除
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         ))}
     </>
   );
@@ -109,4 +129,17 @@ function statusText(e: MediaCacheItem) {
   if (e.status === "running") return `转换中 ${e.percent}%`;
   if (e.status === "error") return "转换失败";
   return "已缓存";
+}
+
+function statusTone(e: MediaCacheItem) {
+  if (e.status === "running") return "orange";
+  if (e.status === "error") return "red";
+  return "green";
+}
+
+/** 2026/11/20 19:42（秒没有意义，省下的宽度留给文件名） */
+function fmtWhen(unixSec: number) {
+  const d = new Date(unixSec * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
