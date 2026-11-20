@@ -41,28 +41,22 @@ export default function SharesPage({ isLocal }: { isLocal: boolean }) {
         (data.length === 0 ? (
           <p className="muted">还没有共享目录。</p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>路径</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((s) => (
-                <tr key={s.id}>
-                  <td>{s.name}</td>
-                  <td className="code path-cell">{s.path}</td>
-                  <td>
-                    <button className="secondary" onClick={() => remove(s.id, s.name)}>
-                      取消共享
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="share-list">
+            <div className="share-row share-head">
+              <span>名称</span>
+              <span>路径</span>
+              <span />
+            </div>
+            {data.map((s) => (
+              <div className="share-row" key={s.id}>
+                <span className="share-name">{s.name}</span>
+                <span className="share-path code">{s.path}</span>
+                <button className="secondary" onClick={() => remove(s.id, s.name)}>
+                  取消共享
+                </button>
+              </div>
+            ))}
+          </div>
         ))}
     </>
   );

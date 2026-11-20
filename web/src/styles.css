@@ -406,6 +406,21 @@ tbody tr:last-child td { border-bottom: none; }
 tbody tr { transition: background 0.12s; }
 tbody tr:hover { background: #f8fcfa; }
 
+/* ---------- 共享目录列表（宽屏是表格样式，窄屏是卡片，不用横向滚动） ---------- */
+.share-list {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
+}
+.share-row {
+  /* 第三列留给按钮，用固定宽度，表头（空单元格）与数据行才对得齐 */
+  display: grid; grid-template-columns: minmax(90px, 0.8fr) minmax(0, 2.2fr) 96px;
+  gap: 12px; align-items: center; padding: 10px 14px; font-size: 14px;
+}
+.share-row + .share-row { border-top: 1px solid #edf3ef; }
+.share-head { background: var(--primary-softer); color: var(--text-2); font-size: 13px; font-weight: 600; }
+.share-name { min-width: 0; overflow-wrap: anywhere; }
+.share-path { min-width: 0; font-weight: 400; overflow-wrap: anywhere; }
+
 /* ---------- 转码缓存：卡片式列表（宽屏表格、窄屏卡片，都不用横向滚动） ---------- */
 .cache-stats {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -521,6 +536,17 @@ tbody tr:hover { background: #f8fcfa; }
   table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   th, td { padding: 9px 10px; white-space: nowrap; }
   td.row { flex-wrap: nowrap; }
+
+  /* 共享目录：名称与按钮占一行，路径另起一行铺满宽度，右侧不留空白 */
+  .share-head { display: none; }
+  .share-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "name act" "path path";
+    gap: 4px 10px; padding: 12px 14px;
+  }
+  .share-name { grid-area: name; font-weight: 600; }
+  .share-path { grid-area: path; font-size: 12px; color: var(--text-3); }
+  .share-row > button { grid-area: act; justify-self: end; }
 
   /* 转码缓存：窄屏改为卡片式分区，字段位置固定，不再需要左右滑动 */
   .cache-stats { gap: 8px; margin: 12px 0; }
