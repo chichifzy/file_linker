@@ -55,8 +55,8 @@ a { color: var(--primary); }
 }
 .brand::before {
   content: ""; width: 26px; height: 26px; border-radius: 8px; flex: none;
-  background: linear-gradient(135deg, #3cc68a, var(--primary));
-  box-shadow: inset 0 0 0 6px rgba(255, 255, 255, 0.35);
+  /* 绿色圆角底 + 白色小文件夹 + 链接圆环 + 小黄点 */
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 26 26'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%233cc68a'/%3E%3Cstop offset='1' stop-color='%2322a06b'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='26' height='26' rx='8' fill='url(%23g)'/%3E%3Cpath d='M6 9.5a2 2 0 0 1 2-2h3l1.6 1.6H18a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2z' fill='%23fff'/%3E%3Ccircle cx='11.6' cy='14' r='2' fill='none' stroke='%2322a06b' stroke-width='1.4'/%3E%3Ccircle cx='14.4' cy='14' r='2' fill='none' stroke='%2322a06b' stroke-width='1.4'/%3E%3Ccircle cx='20.5' cy='5.5' r='1.6' fill='%23ffd36e'/%3E%3C/svg%3E") center / cover no-repeat;
 }
 .side-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow-y: auto; }
 .side-nav a {
@@ -168,6 +168,26 @@ input[type="checkbox"], input[type="radio"] {
 }
 input[type="checkbox"]:focus, input[type="radio"]:focus { box-shadow: none; }
 input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible { box-shadow: var(--ring); }
+
+/* 开关：左侧标题和说明，右侧拨动开关 */
+.setting-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 20px; cursor: pointer; }
+.setting-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.setting-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.setting-desc { font-size: 13px; font-weight: 400; line-height: 1.55; color: var(--text-3); }
+input[type="checkbox"].switch {
+  appearance: none; -webkit-appearance: none; flex-shrink: 0; position: relative;
+  width: 40px; height: 22px; border: none; border-radius: 999px; background: #cfdcd5;
+  transition: background 0.2s;
+}
+input[type="checkbox"].switch::before {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(16, 60, 40, 0.25); transition: transform 0.2s;
+}
+input[type="checkbox"].switch:hover { background: #bccfc4; }
+input[type="checkbox"].switch:checked { background: var(--primary); }
+input[type="checkbox"].switch:checked:hover { background: var(--primary-hover); }
+input[type="checkbox"].switch:checked::before { transform: translateX(18px); }
+input[type="checkbox"].switch:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---------- 按钮 ---------- */
 button {

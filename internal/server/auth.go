@@ -181,12 +181,18 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// me 返回当前用户，以及请求是否来自运行服务的本机。
+// me 返回当前用户、请求是否来自运行服务的本机，以及能否修改共享目录。
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
+	canEdit, err := s.canEditShares(r)
+	if err != nil {
+		internalError(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, struct {
 		*User
-		IsLocal bool `json:"isLocal"`
-	}{currentUser(r), isLocalRequest(r)})
+		IsLocal       bool `json:"isLocal"`
+		CanEditShares bool `json:"canEditShares"`
+	}{currentUser(r), isLocalRequest(r), canEdit})
 }
 
 // changePassword 校验原密码后修改密码。当前会话保持有效，其他设备上的会话全部失效。
@@ -311,7 +317,23 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.Handler {
 	})
 }
 
-// requireLocalAdmin 只允许在运行服务的本机上登录的管理员访问（修改共享范围）。
+// requireShareAdmin 只允许有权修改共享目录的管理员访问：本机，或本机已开启“允许在其它设备更改共享目录”。
+func (s *Server) requireShareAdmin(next http.HandlerFunc) http.Handler {
+	return s.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		ok, err := s.canEditShares(r)
+		if err != nil {
+			internalError(w, r, err)
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusForbidden, "只能在运行服务的电脑上修改共享目录")
+			return
+		}
+		next(w, r)
+	})
+}
+
+// requireLocalAdmin 只允许在运行服务的本机上登录的管理员访问。
 func (s *Server) requireLocalAdmin(next http.HandlerFunc) http.Handler {
 	return s.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
 		if !isLocalRequest(r) {

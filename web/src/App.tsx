@@ -16,8 +16,8 @@ function navFor(me: Me): NavItem[] {
   const items: NavItem[] = [{ to: "/", label: "文件浏览", element: <BrowserPage /> }];
   if (me.role === "admin") {
     items.push({ to: "/invites", label: "邀请码", element: <InvitesPage /> });
-    // 只有在运行服务的电脑上打开时，管理员才能设置共享目录
-    if (me.isLocal) items.push({ to: "/shares", label: "共享目录", element: <SharesPage /> });
+    // 本机，或本机允许在其他设备修改时，管理员才能设置共享目录
+    if (me.canEditShares) items.push({ to: "/shares", label: "共享目录", element: <SharesPage isLocal={me.isLocal} /> });
   }
   return items;
 }

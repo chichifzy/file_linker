@@ -8,6 +8,8 @@ export type Me = {
   role: Role;
   /** 当前页面是否在运行服务的电脑上打开 */
   isLocal: boolean;
+  /** 管理员能否修改共享目录：本机，或本机开启了“允许在其它设备更改共享目录” */
+  canEditShares: boolean;
 };
 
 export type Share = {
@@ -121,4 +123,6 @@ export const api = {
   addShare: (path: string) => request<unknown>("POST", "/admin/shares", { path }),
   removeShare: (id: number) => request<void>("DELETE", `/admin/shares/${id}`),
   hostDirs: (path: string) => request<HostDirs>("GET", `/admin/host-dirs?${qs({ path })}`),
+  remoteShareEdit: () => request<{ enabled: boolean }>("GET", "/admin/remote-share-edit"),
+  setRemoteShareEdit: (enabled: boolean) => request<void>("PUT", "/admin/remote-share-edit", { enabled }),
 };

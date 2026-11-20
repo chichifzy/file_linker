@@ -41,4 +41,11 @@ CREATE TABLE shares (
 	created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 `,
+	// #2 系统设置（键值对）
+	`
+CREATE TABLE settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+`,
 }

@@ -40,10 +40,14 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("POST /api/admin/invites", s.requireAdmin(s.createInvite))
 	m.Handle("DELETE /api/admin/invites/{code}", s.requireAdmin(s.deleteInvite))
 
-	// 管理员（仅限本机）：共享目录
-	m.Handle("POST /api/admin/shares", s.requireLocalAdmin(s.addShare))
-	m.Handle("DELETE /api/admin/shares/{id}", s.requireLocalAdmin(s.removeShare))
-	m.Handle("GET /api/admin/host-dirs", s.requireLocalAdmin(s.hostDirs))
+	// 管理员：共享目录（本机，或本机允许后的其他设备）
+	m.Handle("POST /api/admin/shares", s.requireShareAdmin(s.addShare))
+	m.Handle("DELETE /api/admin/shares/{id}", s.requireShareAdmin(s.removeShare))
+	m.Handle("GET /api/admin/host-dirs", s.requireShareAdmin(s.hostDirs))
+
+	// 管理员（仅限本机）：是否允许在其他设备修改共享目录
+	m.Handle("GET /api/admin/remote-share-edit", s.requireLocalAdmin(s.getRemoteShareEdit))
+	m.Handle("PUT /api/admin/remote-share-edit", s.requireLocalAdmin(s.setRemoteShareEdit))
 
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "接口不存在")
