@@ -63,6 +63,17 @@ export type DirInfo = {
   truncated: boolean;
 };
 
+export type ZipStatus = {
+  status: "running" | "done" | "error";
+  error: string;
+  /** 已打包的源文件字节数 */
+  done: number;
+  total: number;
+};
+
+/** 打包好的 zip 下载地址，完整下载后服务器会删除该压缩包 */
+export const zipURL = (id: string) => `/api/fs/zip/${id}/download`;
+
 async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
@@ -115,6 +126,9 @@ export const api = {
     request<{ entries: Entry[]; truncated: boolean }>("GET", `/fs/search?${qs({ share, path, q, hidden })}`),
   dirInfo: (share: number, path: string, signal: AbortSignal) =>
     request<DirInfo>("GET", `/fs/dirinfo?${qs({ share, path })}`, undefined, signal),
+  createZip: (share: number, path: string) => request<{ id: string }>("POST", `/fs/zip?${qs({ share, path })}`),
+  zipStatus: (id: string) => request<ZipStatus>("GET", `/fs/zip/${id}`),
+  deleteZip: (id: string) => request<void>("DELETE", `/fs/zip/${id}`),
   /** 读取文本文件开头（最多 1MB），返回内容和是否被截断 */
   readText: async (share: number, path: string) => {
     const res = await fetch(fileURL(share, path), { headers: { Range: `bytes=0-${TEXT_PREVIEW_LIMIT - 1}` } });

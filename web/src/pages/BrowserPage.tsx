@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
-import { api, errMsg, fileURL, type DirInfo, type Entry, type Share } from "../api";
+import { api, errMsg, fileURL, zipURL, type DirInfo, type Entry, type Share } from "../api";
+import { useConfirm } from "../components/Confirm";
 import Modal, { type ModalHandle } from "../components/Modal";
 import { KindIcon, PlayBadge } from "../components/FileIcons";
 
@@ -283,8 +284,85 @@ function DirInfoModal({ share, entry, onClose }: { share: Share; entry: Entry; o
     return () => ac.abort();
   }, [share.id, entry.path]);
 
+  const confirm = useConfirm();
+  // 打包任务：id 为空表示未开始；started 表示已触发浏览器下载
+  const [zip, setZip] = useState<{ id: string; done: number; total: number; started?: boolean } | null>(null);
+  const [zipError, setZipError] = useState("");
+  const zipIdRef = useRef("");
+
+  // 每 500ms 查询打包进度，完成后触发下载
+  const zipId = zip?.id ?? "";
+  const zipStarted = !!zip?.started;
+  useEffect(() => {
+    if (!zipId || zipStarted) return;
+    let stop = false;
+    const tick = async () => {
+      try {
+        const s = await api.zipStatus(zipId);
+        if (stop) return;
+        if (s.status === "error") throw new Error(s.error || "打包失败");
+        if (s.status === "done") {
+          // 下载开始后服务器发送完会自行删除压缩包，这里不再取消任务
+          zipIdRef.current = "";
+          const a = document.createElement("a");
+          a.href = zipURL(zipId);
+          a.download = `${entry.name}.zip`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setZip({ id: zipId, done: s.total, total: s.total, started: true });
+          return;
+        }
+        setZip({ id: zipId, done: s.done, total: s.total });
+        timer = window.setTimeout(tick, 500);
+      } catch (e) {
+        if (stop) return;
+        zipIdRef.current = "";
+        setZip(null);
+        setZipError(errMsg(e));
+      }
+    };
+    let timer = window.setTimeout(tick, 300);
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [zipId, zipStarted, entry.name]);
+
+  // 关闭弹窗时取消还没打包完的任务，服务器会删除临时文件
+  useEffect(
+    () => () => {
+      if (zipIdRef.current) api.deleteZip(zipIdRef.current).catch(() => {});
+    },
+    [],
+  );
+
+  const startZip = async () => {
+    const ok = await confirm({
+      title: "即将下载文件夹",
+      message: `即将下载文件夹「${entry.name}」（${info?.truncated ? "超过 " : ""}${fmtSize(info?.size ?? 0)}）。`,
+      confirmText: "打包并下载",
+    });
+    if (!ok) return;
+    setZipError("");
+    try {
+      const { id } = await api.createZip(share.id, entry.path);
+      zipIdRef.current = id;
+      setZip({ id, done: 0, total: 0 });
+    } catch (e) {
+      setZipError(errMsg(e));
+    }
+  };
+
+  const cancelZip = () => {
+    if (zipIdRef.current) api.deleteZip(zipIdRef.current).catch(() => {});
+    zipIdRef.current = "";
+    setZip(null);
+  };
+
   const pending = error ? "统计失败" : "计算中…";
   const more = info?.truncated ? "超过 " : "";
+  const percent = zip && zip.total > 0 ? Math.min(100, Math.floor((zip.done / zip.total) * 100)) : 0;
   return (
     <Modal title="文件夹详情" className="dir-info" onClose={onClose}>
       <div className="modal-body">
@@ -304,6 +382,34 @@ function DirInfoModal({ share, entry, onClose }: { share: Share; entry: Entry; o
         </dl>
         {info?.truncated && <p className="muted text-note">文件夹内容过多，统计超时，以上为已统计的部分。</p>}
         {error && <p className="error">{error}</p>}
+        {zipError && <p className="error">{zipError}</p>}
+        {zip && !zip.started && (
+          <div className="zip-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+            <div className="zip-progress-label">
+              <span>正在打包…</span>
+              <span className="muted">
+                {zip.total > 0 ? `${percent}%（${fmtSize(zip.done)} / ${fmtSize(zip.total)}）` : "准备中"}
+              </span>
+            </div>
+            <div className="zip-progress-track">
+              <div className="zip-progress-bar" style={{ width: `${percent}%` }} />
+            </div>
+          </div>
+        )}
+        {zip?.started && <p className="muted text-note">打包完成，已开始下载。下载完成后服务器上的压缩包会自动删除。</p>}
+        {info && (
+          <div className="modal-foot">
+            {zip && !zip.started ? (
+              <button type="button" className="secondary" onClick={cancelZip}>
+                取消打包
+              </button>
+            ) : (
+              <button type="button" onClick={startZip}>
+                {zip?.started ? "重新下载" : "下载"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </Modal>
   );

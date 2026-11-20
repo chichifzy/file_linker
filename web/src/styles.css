@@ -323,6 +323,11 @@ button.modal-close:hover { background: var(--primary-softer); color: var(--text)
   border-top: 1px solid var(--border); background: var(--primary-softer);
   border-radius: 0 0 16px 16px;
 }
+/* 文件夹打包进度 */
+.zip-progress { display: flex; flex-direction: column; gap: 6px; }
+.zip-progress-label { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
+.zip-progress-track { height: 8px; border-radius: 4px; background: var(--primary-softer); overflow: hidden; }
+.zip-progress-bar { height: 100%; background: var(--primary); transition: width 0.3s ease; }
 /* 图片和视频查看弹窗 */
 dialog.modal.image-viewer { width: min(960px, calc(100vw - 32px)); }
 .image-viewer .modal-head h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

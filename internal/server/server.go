@@ -35,6 +35,11 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("GET /api/fs/file", s.requireUser(s.serveFile))
 	m.Handle("GET /api/fs/search", s.requireUser(s.search))
 	m.Handle("GET /api/fs/dirinfo", s.requireUser(s.dirInfo))
+	initZip()
+	m.Handle("POST /api/fs/zip", s.requireUser(s.createZip))
+	m.Handle("GET /api/fs/zip/{id}", s.requireUser(s.zipStatus))
+	m.Handle("GET /api/fs/zip/{id}/download", s.requireUser(s.downloadZip))
+	m.Handle("DELETE /api/fs/zip/{id}", s.requireUser(s.deleteZip))
 
 	// 管理员：邀请码
 	m.Handle("GET /api/admin/invites", s.requireAdmin(s.listInvites))
