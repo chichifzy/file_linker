@@ -33,6 +33,7 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("GET /api/shares", s.requireUser(s.listShares))
 	m.Handle("GET /api/fs/list", s.requireUser(s.listDir))
 	m.Handle("GET /api/fs/file", s.requireUser(s.serveFile))
+	m.Handle("GET /api/fs/codec", s.requireUser(s.fileCodec))
 	m.Handle("GET /api/fs/search", s.requireUser(s.search))
 	m.Handle("GET /api/fs/dirinfo", s.requireUser(s.dirInfo))
 	initZip()
@@ -40,6 +41,16 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("GET /api/fs/zip/{id}", s.requireUser(s.zipStatus))
 	m.Handle("GET /api/fs/zip/{id}/download", s.requireUser(s.downloadZip))
 	m.Handle("DELETE /api/fs/zip/{id}", s.requireUser(s.deleteZip))
+
+	// 视频转码（浏览器解不了的编码转成 H.264）。缓存持久保留，边转边播
+	initTranscode()
+	m.Handle("POST /api/fs/transcode", s.requireUser(s.createTranscode))
+	m.Handle("GET /api/fs/transcode/{id}", s.requireUser(s.transcodeStatus))
+	m.Handle("GET /api/fs/transcode/{id}/file", s.requireUser(s.serveTranscode))
+	m.Handle("GET /api/fs/transcode/{id}/hls/{name}", s.requireUser(s.serveHLSFile))
+	m.Handle("GET /api/fs/media", s.requireUser(s.listMedia))
+	m.Handle("DELETE /api/fs/media/{id}", s.requireUser(s.deleteMedia))
+	m.Handle("DELETE /api/fs/media", s.requireUser(s.clearMedia))
 
 	// 管理员：邀请码
 	m.Handle("GET /api/admin/invites", s.requireAdmin(s.listInvites))
@@ -107,10 +118,15 @@ func logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-		// 视频拖动会产生大量文件请求，只记录其他接口
-		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/fs/file" {
+		// 视频播放和 HLS 分段会产生大量请求，只记录其他接口；这些请求仅在失败时记录，便于排查播放问题
+		if strings.HasPrefix(r.URL.Path, "/api/") && (!quietPath(r.URL.Path) || rec.status >= 400) {
 			slog.Info("request", "method", r.Method, "path", r.URL.Path,
 				"status", rec.status, "duration", time.Since(start))
 		}
 	})
+}
+
+// quietPath 标记高频的媒体请求，成功时不写日志。
+func quietPath(p string) bool {
+	return p == "/api/fs/file" || strings.HasPrefix(p, "/api/fs/transcode/")
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -176,7 +177,11 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		h.Set("Content-Type", ct)
 	}
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'")
+	// 文本和图片（尤其 svg）按沙箱输出，避免在本站域名下执行脚本。
+	// 音视频不会执行脚本，而 iOS Safari 会拒绝播放带 CSP sandbox 的媒体资源。
+	if kind == "text" || kind == "image" {
+		h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'")
+	}
 	h.Set("Cache-Control", "private, no-cache")
 	if download {
 		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fi.Name()}))
@@ -184,8 +189,56 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 }
 
-const dirInfoTimeout = 15 * time.Second
+// MP4 sample entry 里的编码标识。av01 必须在 avc1 之前判断。
+var videoCodecMarkers = []struct{ marker, name string }{
+	{"av01", "AV1"},
+	{"hvc1", "HEVC"},
+	{"hev1", "HEVC"},
+	{"vp09", "VP9"},
+	{"avc1", "H.264"},
+}
 
+// videoCodec 读取 MP4 的文件头和文件尾判断视频编码（moov 可能位于任意一端）。
+// 只在播放失败时用于说明原因，不参与正常播放。
+func videoCodec(full string) string {
+	f, err := os.Open(full)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	var buf []byte
+	head := make([]byte, 256<<10)
+	if n, _ := io.ReadFull(f, head); n > 0 {
+		buf = append(buf, head[:n]...)
+	}
+	if fi, err := f.Stat(); err == nil && fi.Size() > 1<<20 {
+		tail := make([]byte, 512<<10)
+		if _, err := f.ReadAt(tail, fi.Size()-int64(len(tail))); err == nil {
+			buf = append(buf, tail...)
+		}
+	}
+
+	s := string(buf)
+	for _, c := range videoCodecMarkers {
+		if strings.Contains(s, c.marker) {
+			return c.name
+		}
+	}
+	return ""
+}
+
+// fileCodec 返回视频编码，供前端在播放失败时给出准确原因。
+func (s *Server) fileCodec(w http.ResponseWriter, r *http.Request) {
+	_, full, _, err := s.resolve(r)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"codec": videoCodec(full)})
+}
+
+const dirInfoTimeout = 15 * time.Second
 // 同时进行的文件夹大小统计数，避免多人同时统计大目录拖慢磁盘
 var dirInfoSem = make(chan struct{}, 2)
 

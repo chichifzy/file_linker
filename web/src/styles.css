@@ -341,6 +341,13 @@ dialog.modal.image-viewer { width: min(960px, calc(100vw - 32px)); }
   width: 100%; min-height: 220px; border-radius: var(--radius-sm); background: #f3f6f4; color: var(--text-3, #8a958f);
 }
 .viewer-foot { width: 100%; justify-content: space-between; align-items: center; }
+/* 边转边播时的进度条：转码还在继续，但已经可以看了 */
+.transcode-bar {
+  display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap;
+  width: 100%; margin-top: 8px; padding: 6px 12px;
+  border-radius: var(--radius-sm); background: var(--primary-softer, #eef7f1);
+  color: var(--text-2, #4a5a52); font-size: 13px;
+}
 .viewer-download {
   padding: 6px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   color: var(--text); text-decoration: none; font-size: 14px;

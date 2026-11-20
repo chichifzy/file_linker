@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
-import { api, errMsg, fileURL, zipURL, type DirInfo, type Entry, type Share } from "../api";
+import { api, errMsg, fileURL, hlsURL, transcodeURL, zipURL, type DirInfo, type Entry, type Share } from "../api";
 import { useConfirm } from "../components/Confirm";
 import Modal, { type ModalHandle } from "../components/Modal";
 import { KindIcon, PlayBadge } from "../components/FileIcons";
@@ -46,6 +46,15 @@ export function fmtSize(n: number) {
 }
 
 const fmtTime = (ms: number) => new Date(ms).toLocaleString();
+
+/** 把秒数格式化成 12:34 或 1:02:03，用于显示已转码到的位置 */
+export function fmtClock(sec: number) {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const t = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${t}` : `${m}:${t}`;
+}
 
 export default function BrowserPage() {
   const [params, setParams] = useSearchParams();
@@ -415,6 +424,44 @@ function DirInfoModal({ share, entry, onClose }: { share: Share; entry: Entry; o
   );
 }
 
+/** 把 MediaError.code 翻译成可读原因，方便判断是网络、解码还是格式问题 */
+function mediaHint(code: number): string {
+  switch (code) {
+    case 1:
+      return "加载被中断，请重试";
+    case 2:
+      return "网络请求失败，可能是登录状态已过期或连接中断";
+    case 3:
+      return "浏览器无法解码该视频，编码格式不受支持";
+    case 4:
+      return "资源无法加载，或服务器返回的格式不被支持";
+    default:
+      return "浏览器无法播放该视频";
+  }
+}
+
+/** 已知编码兼容性差时给出具体原因，比通用的错误码提示更有用 */
+function codecHint(codec: string, code: number): string {
+  switch (codec) {
+    case "AV1":
+      return "该视频是 AV1 编码，iPhone/iPad 需要 iOS 17 以上且为 iPhone 15 Pro 及更新机型才支持。建议下载后用 VLC 等播放器观看";
+    case "HEVC":
+      return "该视频是 HEVC(H.265) 编码，当前浏览器不支持。建议下载后观看";
+    case "VP9":
+      return "该视频是 VP9 编码，Safari 支持有限。建议下载后观看";
+    default:
+      return mediaHint(code);
+  }
+}
+
+/** Safari 原生支持 HLS，Chrome/Firefox 不支持，用来决定能不能边转边播 */
+let hlsSupport: boolean | null = null;
+function canPlayHLS() {
+  if (hlsSupport === null)
+    hlsSupport = document.createElement("video").canPlayType("application/vnd.apple.mpegurl") !== "";
+  return hlsSupport;
+}
+
 function Preview({
   share,
   entry,
@@ -429,9 +476,112 @@ function Preview({
   onClose: () => void;
 }) {
   const ref = useRef<ModalHandle>(null);
+  const [mediaError, setMediaError] = useState<{ code: number; message: string } | null>(null);
+  const [codec, setCodec] = useState("");
+  const [playSrc, setPlaySrc] = useState(""); // 非空时播放转码结果
+  const [transcode, setTranscode] = useState<{
+    phase: "idle" | "starting" | "streaming" | "done" | "error";
+    percent: number;
+    readySec: number;
+    error: string;
+  }>({ phase: "idle", percent: 0, readySec: 0, error: "" });
+  const timer = useRef<number | undefined>(undefined);
+  const streaming = useRef(false);
   const idx = siblings.findIndex((s) => s.path === entry.path);
   const prev = idx > 0 ? siblings[idx - 1] : null;
   const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
+
+  // 切换到另一个文件时清掉上一个的播放与转码状态
+  useEffect(() => {
+    setMediaError(null);
+    setCodec("");
+    setPlaySrc("");
+    setTranscode({ phase: "idle", percent: 0, readySec: 0, error: "" });
+    streaming.current = false;
+    if (timer.current) window.clearInterval(timer.current);
+  }, [entry.path]);
+
+  useEffect(
+    () => () => {
+      if (timer.current) window.clearInterval(timer.current);
+    },
+    [],
+  );
+
+  const stopPolling = () => {
+    if (timer.current) {
+      window.clearInterval(timer.current);
+      timer.current = undefined;
+    }
+  };
+
+  /** 转码已完成，直接播放合成好的 mp4，可以随意拖动进度条 */
+  const finishTranscode = (id: string) => {
+    stopPolling();
+    setMediaError(null);
+    setPlaySrc(transcodeURL(id));
+    setTranscode({ phase: "done", percent: 100, readySec: 0, error: "" });
+  };
+
+  /** 首个分段已就绪，切到 HLS 边转边播 */
+  const beginStream = (id: string, readySec: number) => {
+    streaming.current = true;
+    setMediaError(null);
+    setPlaySrc(hlsURL(id));
+    setTranscode((t) => ({ ...t, phase: "streaming", readySec }));
+  };
+
+  const startTranscode = async () => {
+    setTranscode({ phase: "starting", percent: 0, readySec: 0, error: "" });
+    setMediaError(null);
+    try {
+      const r = await api.transcode(share.id, entry.path);
+      if (r.status === "error") {
+        setTranscode({ phase: "error", percent: 0, readySec: 0, error: "转码失败" });
+        return;
+      }
+      // 缓存里已有成品，直接播完整文件
+      if (r.status === "done") return finishTranscode(r.id);
+
+      const canStream = canPlayHLS();
+      if (canStream && r.ready) beginStream(r.id, 0);
+
+      timer.current = window.setInterval(async () => {
+        try {
+          const st = await api.transcodeStatus(r.id);
+          if (st.status === "error") {
+            stopPolling();
+            setTranscode({ phase: "error", percent: 0, readySec: 0, error: st.error || "转码失败" });
+            return;
+          }
+          if (canStream && st.ready) {
+            // 首个分段生成即可开播，转码在后面追着跑
+            if (!streaming.current) beginStream(r.id, st.readySeconds);
+            if (st.status === "done") {
+              stopPolling();
+              // 播放列表已完整，继续用 HLS 播完这次，不换地址以免卡顿
+              setTranscode((t) => ({ ...t, phase: "done", percent: 100, readySec: st.readySeconds }));
+            } else {
+              setTranscode((t) => ({
+                ...t,
+                phase: "streaming",
+                percent: st.percent,
+                readySec: st.readySeconds,
+              }));
+            }
+            return;
+          }
+          // 不支持 HLS 的浏览器只能等完整文件
+          if (st.status === "done") return finishTranscode(r.id);
+          setTranscode((t) => ({ ...t, percent: st.percent, readySec: st.readySeconds }));
+        } catch {
+          // 单次查询失败不影响，下一轮继续
+        }
+      }, 800);
+    } catch (e) {
+      setTranscode({ phase: "error", percent: 0, readySec: 0, error: errMsg(e) });
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -448,7 +598,74 @@ function Preview({
     <Modal title={entry.name} className="image-viewer" onClose={onClose} ref={ref}>
       <div className="modal-body">
         {entry.kind === "image" && <img className="viewer-img" src={src} alt={entry.name} />}
-        {entry.kind === "video" && <video className="viewer-img" src={src} controls autoPlay playsInline />}
+        {entry.kind === "video" &&
+          (transcode.phase === "starting" ? (
+            <div className="viewer-broken">
+              <span>正在转换编码…</span>
+              <small>正在生成第一段视频，马上开始播放</small>
+            </div>
+          ) : transcode.phase === "error" ? (
+            <div className="viewer-broken">
+              <span>转换失败</span>
+              <small>{transcode.error}</small>
+              <span className="row">
+                <button type="button" className="secondary" onClick={startTranscode}>
+                  重试
+                </button>
+                <a className="viewer-download" href={src} target="_blank" rel="noreferrer">
+                  在新窗口直接打开
+                </a>
+              </span>
+            </div>
+          ) : mediaError ? (
+            <div className="viewer-broken">
+              <span>无法播放该视频</span>
+              <small>
+                {playSrc
+                  ? "转码后的视频仍然无法播放，建议下载后用本地播放器打开"
+                  : codecHint(codec, mediaError.code)}
+              </small>
+              {codec && !playSrc && <small className="muted">视频编码：{codec}</small>}
+              <span className="row">
+                {!playSrc && (
+                  <button type="button" className="secondary" onClick={startTranscode}>
+                    转换编码
+                  </button>
+                )}
+                <a className="viewer-download" href={src} target="_blank" rel="noreferrer">
+                  在新窗口直接打开
+                </a>
+              </span>
+            </div>
+          ) : (
+            <>
+              <video
+                className="viewer-img"
+                src={playSrc || src}
+                controls
+                autoPlay
+                playsInline
+                preload="metadata"
+                onError={(e) => {
+                  const err = e.currentTarget.error;
+                  setMediaError({ code: err?.code ?? -1, message: err?.message ?? "" });
+                  // 原始文件失败时才查编码；转码文件失败说明转换没解决问题
+                  if (!playSrc) {
+                    api.codec(share.id, entry.path).then(
+                      (d) => setCodec(d.codec),
+                      () => {},
+                    );
+                  }
+                }}
+              />
+              {transcode.phase === "streaming" && (
+                <div className="transcode-bar">
+                  <span>正在转换 {transcode.percent}%</span>
+                  <span className="muted">可播放至 {fmtClock(transcode.readySec)}</span>
+                </div>
+              )}
+            </>
+          ))}
         {entry.kind === "text" && <TextView share={share} entry={entry} />}
         {entry.kind === "binary" && (
           <div className="viewer-broken">

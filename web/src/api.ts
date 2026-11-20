@@ -106,6 +106,43 @@ const qs = (params: Record<string, string | number | boolean | undefined>) => {
 export const fileURL = (share: number, path: string, download = false) =>
   `/api/fs/file?${qs({ share, path, download })}`;
 
+/** 转码后的视频地址，支持 Range 可拖动进度条 */
+export const transcodeURL = (id: string) => `/api/fs/transcode/${id}/file`;
+
+/** 边转边播用的 HLS 播放列表地址，Safari 可直接播放 */
+export const hlsURL = (id: string) => `/api/fs/transcode/${id}/hls/index.m3u8`;
+
+export type TranscodeStatus = {
+  status: "running" | "done" | "error";
+  error?: string;
+  /** 0-100 */
+  percent: number;
+  /** 首个分段已生成，现在就能开始播放 */
+  ready: boolean;
+  /** 源视频总时长（秒） */
+  duration: number;
+  /** 已经转码到的位置（秒） */
+  readySeconds: number;
+};
+
+export type MediaCacheItem = {
+  id: string;
+  name: string;
+  shareId: number;
+  shareName: string;
+  /** 相对共享目录的路径 */
+  rel: string;
+  srcSize: number;
+  duration: number;
+  status: "running" | "done" | "error";
+  error?: string;
+  /** 缓存占用字节数 */
+  bytes: number;
+  percent: number;
+  created: number;
+  accessed: number;
+};
+
 /** 文本预览最多读取的字节数，与后端一致 */
 export const TEXT_PREVIEW_LIMIT = 1 << 20;
 
@@ -127,6 +164,15 @@ export const api = {
   dirInfo: (share: number, path: string, signal: AbortSignal) =>
     request<DirInfo>("GET", `/fs/dirinfo?${qs({ share, path })}`, undefined, signal),
   createZip: (share: number, path: string) => request<{ id: string }>("POST", `/fs/zip?${qs({ share, path })}`),
+  /** 判断视频编码（AV1/HEVC/VP9/H.264），用于播放失败时说明原因 */
+  codec: (share: number, path: string) => request<{ codec: string }>("GET", `/fs/codec?${qs({ share, path })}`),
+  /** 请求把视频转成 H.264；同一文件只会转一次，已转过时直接返回 done */
+  transcode: (share: number, path: string) =>
+    request<{ id: string; status: string; ready: boolean }>("POST", `/fs/transcode?${qs({ share, path })}`),
+  transcodeStatus: (id: string) => request<TranscodeStatus>("GET", `/fs/transcode/${id}`),
+  mediaList: () => request<{ entries: MediaCacheItem[]; used: number; limit: number }>("GET", "/fs/media"),
+  deleteMedia: (id: string) => request<void>("DELETE", `/fs/media/${id}`),
+  clearMedia: () => request<{ ok: boolean; count: number }>("DELETE", "/fs/media"),
   zipStatus: (id: string) => request<ZipStatus>("GET", `/fs/zip/${id}`),
   deleteZip: (id: string) => request<void>("DELETE", `/fs/zip/${id}`),
   /** 读取文本文件开头（最多 1MB），返回内容和是否被截断 */

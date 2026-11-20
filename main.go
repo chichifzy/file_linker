@@ -22,6 +22,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "监听地址")
 	dbPath := flag.String("db", "data.db", "SQLite 数据库文件路径")
 	secureCookie := flag.Bool("secure-cookie", false, "为会话 Cookie 设置 Secure 标记（HTTPS 部署时开启）")
+	cacheGB := flag.Int64("cache-gb", 20, "视频转码缓存容量上限（GB），0 表示不限制")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `用法:
   %[1]s [flags]                                启动服务
@@ -74,11 +75,12 @@ flags:
 	}
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 
+	// 转码缓存放在系统缓存目录，容量超过上限时按最久未使用淘汰
+	server.SetMediaCache("", *cacheGB<<30)
 	srv := &http.Server{
 		Handler:           server.New(database, web.Dist(), *secureCookie, port),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

@@ -4,6 +4,7 @@ import type { Me } from "./api";
 import { useAuth } from "./auth";
 import LoginPage from "./pages/LoginPage";
 import BrowserPage from "./pages/BrowserPage";
+import CachePage from "./pages/CachePage";
 import InvitesPage from "./pages/InvitesPage";
 import SharesPage from "./pages/SharesPage";
 import ShareQRModal from "./components/ShareQRModal";
@@ -13,7 +14,10 @@ type NavItem = { to: string; label: string; element: React.ReactNode };
 
 // 前端只控制展示，真正的权限校验在后端。
 function navFor(me: Me): NavItem[] {
-  const items: NavItem[] = [{ to: "/", label: "文件浏览", element: <BrowserPage /> }];
+  const items: NavItem[] = [
+    { to: "/", label: "文件浏览", element: <BrowserPage /> },
+    { to: "/cache", label: "转码缓存", element: <CachePage /> },
+  ];
   if (me.role === "admin") {
     items.push({ to: "/invites", label: "邀请码", element: <InvitesPage /> });
     // 本机，或本机允许在其他设备修改时，管理员才能设置共享目录
