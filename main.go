@@ -23,6 +23,7 @@ func main() {
 	dbPath := flag.String("db", "data.db", "SQLite 数据库文件路径")
 	secureCookie := flag.Bool("secure-cookie", false, "为会话 Cookie 设置 Secure 标记（HTTPS 部署时开启）")
 	cacheGB := flag.Int64("cache-gb", 0, "视频转码缓存容量上限（GB），0 表示不限制、缓存永久保留")
+	cacheDir := flag.String("cache-dir", "", "视频转码缓存目录，默认系统缓存目录；在网页上改过则用网页里的设置")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `用法:
   %[1]s [flags]                                启动服务
@@ -75,8 +76,9 @@ flags:
 	}
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 
-	// 转码缓存放在系统缓存目录，容量超过上限时按最久未使用淘汰
-	server.SetMediaCache("", *cacheGB<<30)
+	// 转码缓存默认放在系统缓存目录（网页上可以改，改过之后以网页设置为准）。
+	// 容量超过上限时按最久未使用淘汰；-cache-dir 显式指定时优先于网页设置。
+	server.SetMediaCache(*cacheDir, *cacheGB<<30)
 	srv := &http.Server{
 		Handler:           server.New(database, web.Dist(), *secureCookie, port),
 		ReadHeaderTimeout: 10 * time.Second,

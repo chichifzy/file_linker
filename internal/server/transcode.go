@@ -43,7 +43,6 @@ const (
 )
 
 var (
-	mediaRoot  string
 	mediaLimit atomic.Int64
 	// mediaLimit 无法区分「没配置」和「显式配置为 0（不限制）」，单独记一个标记
 	mediaLimitSet atomic.Bool
@@ -84,17 +83,23 @@ type mediaEntry struct {
 // SetMediaCache 配置缓存目录与容量上限。dir 为空时用系统缓存目录；
 // limitBytes <= 0 表示不限制容量（缓存永久保留，只由用户手动删除）。
 func SetMediaCache(dir string, limitBytes int64) {
-	mediaRoot = dir
+	if dir != "" {
+		// 命令行传相对路径时按当前目录补全，避免服务从别处启动后路径对不上
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+	}
+	setMediaDirRoot(dir)
 	mediaLimit.Store(limitBytes)
 	mediaLimitSet.Store(true)
 }
 
 func mediaEntryDir(id string) string {
-	return filepath.Join(mediaRoot, id)
+	return filepath.Join(mediaDir(), id)
 }
 
 func mediaEntryFile(id, name string) string {
-	return filepath.Join(mediaRoot, id, name)
+	return filepath.Join(mediaDir(), id, name)
 }
 
 // mediaPlaySize 是当前实际播放的那个文件的大小，前端用「已缓冲比例 × 大小」估算下载速度。
@@ -131,33 +136,43 @@ func dirSize(dir string) int64 {
 
 // initTranscode 恢复上次的缓存索引，丢弃没转完的残留（分段不完整，无法继续），
 // 然后启动清理协程。
-func initTranscode() {
-	if mediaRoot == "" {
-		root, err := os.UserCacheDir()
-		if err != nil || root == "" {
-			root = os.TempDir()
+func (s *Server) initTranscode() {
+	if mediaDir() == "" {
+		// 网页上改过的目录记在 settings 里；命令行 -cache-dir 已经在
+		// SetMediaCache 里设过，优先级更高，这里不会再覆盖
+		dir := ""
+		if s != nil && s.db != nil {
+			d, err := s.savedMediaDir(context.Background())
+			if err != nil {
+				slog.Warn("读取缓存目录设置失败，用默认目录", "err", err)
+			}
+			dir = d
 		}
-		mediaRoot = filepath.Join(root, "file_linker", "media")
+		if dir == "" {
+			dir = defaultMediaDir()
+		}
+		setMediaDirRoot(dir)
 	}
+	root := mediaDir()
 	// 只有从未显式配置过上限时才用默认值。显式传 0 表示不限制，
 	// 不能在这里被 20 GiB 覆盖掉，否则「永久保留」失效。
 	if !mediaLimitSet.Load() {
 		mediaLimit.Store(mediaDefLimit)
 	}
-	if err := os.MkdirAll(mediaRoot, 0o755); err != nil {
-		slog.Warn("无法创建转码缓存目录", "dir", mediaRoot, "err", err)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		slog.Warn("无法创建转码缓存目录", "dir", root, "err", err)
 		return
 	}
 
-	dirents, err := os.ReadDir(mediaRoot)
+	dirents, err := os.ReadDir(root)
 	if err != nil {
-		slog.Warn("无法读取转码缓存目录", "dir", mediaRoot, "err", err)
+		slog.Warn("无法读取转码缓存目录", "dir", root, "err", err)
 		return
 	}
 	restored, dropped := 0, 0
 	for _, de := range dirents {
 		id := de.Name()
-		dir := filepath.Join(mediaRoot, id)
+		dir := filepath.Join(root, id)
 		// 丢弃时记录原因，否则缓存「莫名消失」时无从排查
 		drop := func(reason string, args ...any) {
 			slog.Warn("丢弃转码缓存："+reason, args...)
@@ -196,7 +211,7 @@ func initTranscode() {
 	if l := mediaLimit.Load(); l > 0 {
 		limitText = fmtBytes(l)
 	}
-	slog.Info("转码缓存已载入", "dir", mediaRoot,
+	slog.Info("转码缓存已载入", "dir", root,
 		"restored", restored, "dropped", dropped,
 		"used", fmtBytes(totalBytesLocked()), "limit", limitText)
 
@@ -381,6 +396,10 @@ func validPlaylist(s string) bool {
 
 // createTranscode 为指定视频创建（或复用）转码任务。
 func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
+	if mediaMoving.Load() {
+		writeError(w, http.StatusConflict, "缓存目录正在迁移，请几秒后再试")
+		return
+	}
 	_, full, rel, err := s.resolve(r)
 	if err != nil {
 		fail(w, r, err)
@@ -827,9 +846,17 @@ func (s *Server) listMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	mediaMu.Unlock()
 	sort.Slice(items, func(i, j int) bool { return items[i].Created > items[j].Created })
-	writeJSON(w, http.StatusOK, map[string]any{
+	// 缓存目录是运行服务的电脑上的绝对路径，和共享目录一样只给能改它的管理员
+	editable := s.mediaDirEditable(r)
+	resp := map[string]any{
 		"entries": items, "used": used, "limit": mediaLimit.Load(),
-	})
+		"editable": editable,
+	}
+	if editable {
+		resp["dir"] = mediaDir()
+		resp["defaultDir"] = defaultMediaDir()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // deleteMedia 删除一条缓存；正在转码的会先取消任务。

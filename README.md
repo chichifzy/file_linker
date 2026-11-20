@@ -32,6 +32,7 @@
 file_linker -addr :8081                      换端口
 file_linker -db /path/to/data.db             指定数据库位置
 file_linker -cache-gb 20                     限制转码缓存上限（默认 0，不限制）
+file_linker -cache-dir D:\video-cache         指定转码缓存目录（网页上改过则以网页设置为准）
 file_linker create-admin <用户ID> <用户名>    创建管理员（只能有一个）
 ```
 
@@ -51,6 +52,7 @@ file_linker create-admin <用户ID> <用户名>    创建管理员（只能有�
 - 转码完成后自动切换成普通 mp4 并从当前进度接着播，此时可以自由拖动进度条。
 - 最终只保留一个 mp4 成品（分段与播放列表在完成约 1 分钟后清理），缓存在系统缓存目录（Windows 为 `%LOCALAPPDATA%\file_linker\media`），**默认不限制容量、永久保留**，重启服务后仍然有效，同一个视频再次打开直接播放。
 - 只有在左侧「转码缓存」页面手动删除时才释放空间。想限制占用可在启动时指定上限，超出后按最久未使用淘汰：`file_linker -cache-gb 20`
+- 缓存目录可以在「转码缓存」页面上直接改（管理员可见）：换到空间更大的磁盘时，填一个新目录保存即可，已有的缓存会自动迁移过去、原目录随后清空，不用重新转换。也可以一次指定：`file_linker -cache-dir D:\video-cache`（命令行优先于网页设置）。迁移要求目标目录为空、且没有正在转换的视频；跨盘迁移是复制后删除，几个 GB 需要一点时间，期间请勿关闭服务。
 - 转码可选依赖 [ffmpeg](https://ffmpeg.org/download.html)。Windows 上 `start.bat` 会询问是否自动安装；缺少它不影响浏览和下载，只影响这个功能。
 
 ## 视频缩略图
