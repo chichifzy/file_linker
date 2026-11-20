@@ -93,6 +93,8 @@ flags:
 	printURLs(port)
 
 	<-ctx.Done()
+	// 先停掉在跑的 ffmpeg，再关服务，避免子进程变成孤儿
+	server.StopTranscodes()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {

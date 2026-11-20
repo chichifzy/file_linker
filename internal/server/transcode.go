@@ -823,6 +823,19 @@ func (s *Server) clearMedia(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(dirs)})
 }
 
+// StopTranscodes 取消所有正在进行的转码，供服务退出时调用。
+// 否则 ffmpeg 子进程会在父进程结束后变成孤儿，继续吃 CPU 往已被清理的目录里写文件。
+func StopTranscodes() {
+	mediaMu.Lock()
+	defer mediaMu.Unlock()
+	for _, e := range mediaEntries {
+		if e.cancel != nil {
+			e.cancel()
+			e.cancel = nil
+		}
+	}
+}
+
 // fmtBytes 人类可读的字节数，只用于日志。
 func fmtBytes(n int64) string {
 	const unit = 1024
