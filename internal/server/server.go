@@ -34,6 +34,7 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("GET /api/fs/list", s.requireUser(s.listDir))
 	m.Handle("GET /api/fs/file", s.requireUser(s.serveFile))
 	m.Handle("GET /api/fs/search", s.requireUser(s.search))
+	m.Handle("GET /api/fs/dirinfo", s.requireUser(s.dirInfo))
 
 	// 管理员：邀请码
 	m.Handle("GET /api/admin/invites", s.requireAdmin(s.listInvites))

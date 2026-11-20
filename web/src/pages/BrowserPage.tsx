@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
-import { api, errMsg, fileURL, type Entry, type Share } from "../api";
+import { api, errMsg, fileURL, type DirInfo, type Entry, type Share } from "../api";
 import Modal, { type ModalHandle } from "../components/Modal";
 import { KindIcon, PlayBadge } from "../components/FileIcons";
 
@@ -186,6 +186,7 @@ function Listing({ share, path, q, showHidden, go }: { share: Share; path: strin
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<Entry | null>(null);
+  const [detail, setDetail] = useState<Entry | null>(null);
 
   const load = useCallback(() => {
     setEntries(null);
@@ -242,9 +243,15 @@ function Listing({ share, path, q, showHidden, go }: { share: Share; path: strin
                   {e.name}
                   {q && <small className="muted file-dir">{e.path.slice(0, -e.name.length - 1) || "/"}</small>}
                 </span>
-                <span className="file-size muted">{e.isDir ? "" : fmtSize(e.size)}</span>
+                <span className="file-size muted">{e.isDir ? <span className="dir-info-slot" /> : fmtSize(e.size)}</span>
                 <span className="file-time muted">{fmtTime(e.modTime)}</span>
               </button>
+              {/* 不能嵌套在行按钮里，用绝对定位放到大小一栏 */}
+              {e.isDir && (
+                <button className="secondary dir-info-btn" onClick={() => setDetail(e)}>
+                  文件夹详情
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -259,7 +266,46 @@ function Listing({ share, path, q, showHidden, go }: { share: Share; path: strin
           onClose={() => setPreview(null)}
         />
       )}
+      {detail && <DirInfoModal share={share} entry={detail} onClose={() => setDetail(null)} />}
     </>
+  );
+}
+
+/** 文件夹详情：打开时才统计大小，关闭时取消请求 */
+function DirInfoModal({ share, entry, onClose }: { share: Share; entry: Entry; onClose: () => void }) {
+  const [info, setInfo] = useState<DirInfo | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const ac = new AbortController();
+    api.dirInfo(share.id, entry.path, ac.signal).then(setInfo, (e) => {
+      if (!ac.signal.aborted) setError(errMsg(e));
+    });
+    return () => ac.abort();
+  }, [share.id, entry.path]);
+
+  const pending = error ? "统计失败" : "计算中…";
+  const more = info?.truncated ? "超过 " : "";
+  return (
+    <Modal title="文件夹详情" className="dir-info" onClose={onClose}>
+      <div className="modal-body">
+        <dl className="info-list">
+          <dt>名称</dt>
+          <dd>{entry.name}</dd>
+          <dt>位置</dt>
+          <dd>
+            {share.name}/{entry.path}
+          </dd>
+          <dt>修改时间</dt>
+          <dd>{fmtTime(entry.modTime)}</dd>
+          <dt>占用大小</dt>
+          <dd>{info ? `${more}${fmtSize(info.size)}（${info.size.toLocaleString()} 字节）` : pending}</dd>
+          <dt>包含</dt>
+          <dd>{info ? `${more}${info.files.toLocaleString()} 个文件，${info.dirs.toLocaleString()} 个文件夹` : pending}</dd>
+        </dl>
+        {info?.truncated && <p className="muted text-note">文件夹内容过多，统计超时，以上为已统计的部分。</p>}
+        {error && <p className="error">{error}</p>}
+      </div>
+    </Modal>
   );
 }
 
@@ -301,7 +347,7 @@ function Preview({
         {entry.kind === "binary" && (
           <div className="viewer-broken">
             <span>不支持预览该类型的文件</span>
-            <small>只能查看文件信息</small>
+            <small>可以下载后在本机打开</small>
           </div>
         )}
         <div className="row viewer-foot">
@@ -319,11 +365,9 @@ function Preview({
                 </button>
               </>
             )}
-            {entry.kind !== "binary" && (
-              <a className="viewer-download" href={fileURL(share.id, entry.path, true)}>
-                下载
-              </a>
-            )}
+            <a className="viewer-download" href={fileURL(share.id, entry.path, true)}>
+              下载
+            </a>
           </span>
         </div>
       </div>

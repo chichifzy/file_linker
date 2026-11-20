@@ -52,9 +52,21 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export type DirInfo = {
+  name: string;
+  path: string;
+  modTime: number;
+  size: number;
+  files: number;
+  dirs: number;
+  /** 统计超时，只统计了一部分 */
+  truncated: boolean;
+};
+
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
+    signal,
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -101,6 +113,8 @@ export const api = {
     request<{ path: string; entries: Entry[] }>("GET", `/fs/list?${qs({ share, path, hidden })}`),
   search: (share: number, path: string, q: string, hidden: boolean) =>
     request<{ entries: Entry[]; truncated: boolean }>("GET", `/fs/search?${qs({ share, path, q, hidden })}`),
+  dirInfo: (share: number, path: string, signal: AbortSignal) =>
+    request<DirInfo>("GET", `/fs/dirinfo?${qs({ share, path })}`, undefined, signal),
   /** 读取文本文件开头（最多 1MB），返回内容和是否被截断 */
   readText: async (share: number, path: string) => {
     const res = await fetch(fileURL(share, path), { headers: { Range: `bytes=0-${TEXT_PREVIEW_LIMIT - 1}` } });

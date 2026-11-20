@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// 只有这些扩展名的文件可以读取内容，其他文件只显示基础信息，服务端永远不打开它们。
+// 只有这些扩展名的文件可以在浏览器中预览，其他文件只能作为附件下载。
 var (
 	textExts = setOf("txt", "md", "markdown", "log", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "ini",
 		"conf", "cfg", "xml", "html", "htm", "css", "scss", "less", "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue",
@@ -140,7 +140,7 @@ func (s *Server) listDir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": rel, "entries": list})
 }
 
-// serveFile 只输出白名单类型的文件；用 ServeContent 流式输出并支持 Range，大文件不会读入内存。
+// serveFile 预览只输出白名单类型的文件，其他类型只允许下载；用 ServeContent 流式输出并支持 Range，大文件不会读入内存。
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	_, full, _, err := s.resolve(r)
 	if err != nil {
@@ -148,7 +148,9 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := fileKind(filepath.Base(full))
-	if kind == "binary" {
+	download := r.URL.Query().Get("download") == "1"
+	// 不支持预览的文件只能作为附件下载，不能在浏览器中直接打开
+	if kind == "binary" && !download {
 		writeError(w, http.StatusForbidden, "不支持查看该类型的文件")
 		return
 	}
@@ -168,16 +170,73 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	if kind == "text" {
 		// 一律按纯文本输出，避免 html/svg 等在本站域名下执行脚本
 		h.Set("Content-Type", "text/plain; charset=utf-8")
+	} else if kind == "binary" {
+		h.Set("Content-Type", "application/octet-stream")
 	} else if ct := mime.TypeByExtension(strings.ToLower(filepath.Ext(full))); ct != "" {
 		h.Set("Content-Type", ct)
 	}
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'")
 	h.Set("Cache-Control", "private, no-cache")
-	if r.URL.Query().Get("download") == "1" {
+	if download {
 		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fi.Name()}))
 	}
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
+}
+
+const dirInfoTimeout = 15 * time.Second
+
+// 同时进行的文件夹大小统计数，避免多人同时统计大目录拖慢磁盘
+var dirInfoSem = make(chan struct{}, 2)
+
+// dirInfo 统计文件夹的占用大小（文件大小之和，含隐藏文件）、文件数和子文件夹数。
+// 不跟随符号链接；超时或客户端断开时停止，返回已统计的部分并标记 truncated。
+func (s *Server) dirInfo(w http.ResponseWriter, r *http.Request) {
+	_, full, rel, err := s.resolve(r)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	fi, err := os.Stat(full)
+	if err != nil || !fi.IsDir() {
+		writeError(w, http.StatusNotFound, "文件夹不存在")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), dirInfoTimeout)
+	defer cancel()
+	select {
+	case dirInfoSem <- struct{}{}:
+		defer func() { <-dirInfoSem }()
+	case <-ctx.Done():
+		writeError(w, http.StatusServiceUnavailable, "服务器忙，请稍后再试")
+		return
+	}
+
+	var size, files, dirs int64
+	truncated := false
+	filepath.WalkDir(full, func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			truncated = true
+			return filepath.SkipAll
+		}
+		if err != nil || p == full {
+			return nil
+		}
+		switch {
+		case d.IsDir():
+			dirs++
+		case d.Type().IsRegular():
+			if info, err := d.Info(); err == nil {
+				files++
+				size += info.Size()
+			}
+		}
+		return nil
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": fi.Name(), "path": rel, "modTime": fi.ModTime().UnixMilli(),
+		"size": size, "files": files, "dirs": dirs, "truncated": truncated,
+	})
 }
 
 const (
