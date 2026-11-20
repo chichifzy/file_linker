@@ -396,7 +396,7 @@ function DirInfoModal({ share, entry, onClose }: { share: Share; entry: Entry; o
             </div>
           </div>
         )}
-        {zip?.started && <p className="muted text-note">打包完成，已开始下载。下载完成后服务器上的压缩包会自动删除。</p>}
+        {zip?.started && <p className="muted text-note">打包完成，已开始下载。</p>}
         {info && (
           <div className="modal-foot">
             {zip && !zip.started ? (
