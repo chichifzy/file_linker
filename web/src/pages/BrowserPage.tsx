@@ -487,6 +487,9 @@ function Preview({
   }>({ phase: "idle", percent: 0, readySec: 0, error: "" });
   const timer = useRef<number | undefined>(undefined);
   const streaming = useRef(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  // 从 HLS 切到 mp4 时记下播放位置，切完接着播，不从头开始
+  const resumeAt = useRef<{ time: number; playing: boolean } | null>(null);
   const idx = siblings.findIndex((s) => s.path === entry.path);
   const prev = idx > 0 ? siblings[idx - 1] : null;
   const next = idx >= 0 && idx < siblings.length - 1 ? siblings[idx + 1] : null;
@@ -498,6 +501,7 @@ function Preview({
     setPlaySrc("");
     setTranscode({ phase: "idle", percent: 0, readySec: 0, error: "" });
     streaming.current = false;
+    resumeAt.current = null;
     if (timer.current) window.clearInterval(timer.current);
   }, [entry.path]);
 
@@ -515,10 +519,17 @@ function Preview({
     }
   };
 
-  /** 转码已完成，直接播放合成好的 mp4，可以随意拖动进度条 */
+  /** 转码已完成，切成合成好的 mp4：只有一个成品文件，进度条可以随意拖动 */
   const finishTranscode = (id: string) => {
     stopPolling();
     setMediaError(null);
+    // 边转边播用的是 HLS「直播」语义（时长还在增长、不能往前拖），
+    // 转完必须换成 mp4 才是正常视频。先记下看到哪儿，换完接着播。
+    const v = videoRef.current;
+    if (streaming.current && v) {
+      resumeAt.current = { time: v.currentTime || 0, playing: !v.paused && !v.ended };
+    }
+    streaming.current = false;
     setPlaySrc(transcodeURL(id));
     setTranscode({ phase: "done", percent: 100, readySec: 0, error: "" });
   };
@@ -554,25 +565,20 @@ function Preview({
             setTranscode({ phase: "error", percent: 0, readySec: 0, error: st.error || "转码失败" });
             return;
           }
+          // 转码结束：不论之前是否在边转边播，都切成完整 mp4（可自由拖动）
+          if (st.status === "done") return finishTranscode(r.id);
           if (canStream && st.ready) {
             // 首个分段生成即可开播，转码在后面追着跑
             if (!streaming.current) beginStream(r.id, st.readySeconds);
-            if (st.status === "done") {
-              stopPolling();
-              // 播放列表已完整，继续用 HLS 播完这次，不换地址以免卡顿
-              setTranscode((t) => ({ ...t, phase: "done", percent: 100, readySec: st.readySeconds }));
-            } else {
-              setTranscode((t) => ({
-                ...t,
-                phase: "streaming",
-                percent: st.percent,
-                readySec: st.readySeconds,
-              }));
-            }
+            setTranscode((t) => ({
+              ...t,
+              phase: "streaming",
+              percent: st.percent,
+              readySec: st.readySeconds,
+            }));
             return;
           }
           // 不支持 HLS 的浏览器只能等完整文件
-          if (st.status === "done") return finishTranscode(r.id);
           setTranscode((t) => ({ ...t, percent: st.percent, readySec: st.readySeconds }));
         } catch {
           // 单次查询失败不影响，下一轮继续
@@ -640,12 +646,23 @@ function Preview({
           ) : (
             <>
               <video
+                ref={videoRef}
                 className="viewer-img"
                 src={playSrc || src}
                 controls
                 autoPlay
                 playsInline
                 preload="metadata"
+                onLoadedMetadata={(ev) => {
+                  // 换源后回到原来的位置，观看不中断
+                  const r = resumeAt.current;
+                  if (!r) return;
+                  resumeAt.current = null;
+                  const v = ev.currentTarget;
+                  const end = Number.isFinite(v.duration) ? v.duration : 0;
+                  if (r.time > 1 && (end === 0 || r.time < end - 1)) v.currentTime = r.time;
+                  if (r.playing) void v.play().catch(() => {});
+                }}
                 onError={(e) => {
                   const err = e.currentTarget.error;
                   setMediaError({ code: err?.code ?? -1, message: err?.message ?? "" });

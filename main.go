@@ -22,7 +22,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "监听地址")
 	dbPath := flag.String("db", "data.db", "SQLite 数据库文件路径")
 	secureCookie := flag.Bool("secure-cookie", false, "为会话 Cookie 设置 Secure 标记（HTTPS 部署时开启）")
-	cacheGB := flag.Int64("cache-gb", 20, "视频转码缓存容量上限（GB），0 表示不限制")
+	cacheGB := flag.Int64("cache-gb", 0, "视频转码缓存容量上限（GB），0 表示不限制、缓存永久保留")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `用法:
   %[1]s [flags]                                启动服务

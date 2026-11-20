@@ -54,12 +54,12 @@ export default function CachePage() {
       <Messages error={error || action.error} notice={action.notice} />
       <p className="muted">
         手机等设备无法直接播放的视频（AV1、HEVC 等），转换编码后会在这里留一份 H.264 版本，下次打开直接播放。
-        缓存放在运行服务的电脑上，删除它不影响共享目录里的原文件。
+        缓存放在运行服务的电脑上，默认一直保留，只有在这里删除才会释放空间；删除它不影响共享目录里的原文件。
       </p>
       {data && (
         <p className="muted">
           已用 {fmtSize(data.used)}
-          {limit > 0 ? ` / 上限 ${fmtSize(limit)}` : "（不限制容量）"}
+          {limit > 0 ? ` / 上限 ${fmtSize(limit)}` : "（不限制容量，永久保留）"}
           {limit > 0 && "，超出上限时自动淘汰最久未使用的缓存"}
         </p>
       )}

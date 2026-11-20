@@ -30,20 +30,23 @@ import (
 // 首个分段几十毫秒就能生成，前端拿到播放列表就能开始播，转码在后面追着跑。
 //
 // 转完后再把分段流拷贝成一个 mp4（不变编码，几秒钟），这样下次打开可以直接
-// 拖动进度条。缓存是持久的，服务重启后仍然有效，超出容量上限时按最久未使用淘汰。
+// 拖动进度条。缓存是持久的，服务重启后仍然有效；默认不限制容量，一直保留到
+// 用户在缓存列表里手动删除，只有显式配置 -cache-gb 时才按最久未使用淘汰。
 
 const (
 	mediaMetaName = "meta.json"  // 每个条目的元数据
 	mediaListName = "index.m3u8" // HLS 播放列表
 	mediaMP4Name  = "out.mp4"    // 转完后合成的完整文件
 	mediaSegSec   = 4            // 单个分段时长，越短首帧越快
-	mediaIdleSec  = 600          // 转完后分段空闲多久才删除（播放中会持续刷新）
-	mediaDefLimit = 20 << 30     // 默认容量上限 20 GiB
+	mediaIdleSec  = 60           // 转完后 HLS 空闲多久就清理（前端会在完成时切到 mp4）
+	mediaDefLimit = 20 << 30     // 未配置上限时的兜底值（仅在 SetMediaCache 未被调用时生效）
 )
 
 var (
 	mediaRoot  string
 	mediaLimit atomic.Int64
+	// mediaLimit 无法区分「没配置」和「显式配置为 0（不限制）」，单独记一个标记
+	mediaLimitSet atomic.Bool
 
 	mediaMu      sync.Mutex
 	mediaEntries = map[string]*mediaEntry{}
@@ -77,10 +80,12 @@ type mediaEntry struct {
 	cancel    context.CancelFunc
 }
 
-// SetMediaCache 配置缓存目录与容量上限。dir 为空时用系统缓存目录；limit<=0 表示不限制。
+// SetMediaCache 配置缓存目录与容量上限。dir 为空时用系统缓存目录；
+// limitBytes <= 0 表示不限制容量（缓存永久保留，只由用户手动删除）。
 func SetMediaCache(dir string, limitBytes int64) {
 	mediaRoot = dir
 	mediaLimit.Store(limitBytes)
+	mediaLimitSet.Store(true)
 }
 
 func mediaEntryDir(id string) string {
@@ -124,7 +129,9 @@ func initTranscode() {
 		}
 		mediaRoot = filepath.Join(root, "file_linker", "media")
 	}
-	if mediaLimit.Load() == 0 {
+	// 只有从未显式配置过上限时才用默认值。显式传 0 表示不限制，
+	// 不能在这里被 20 GiB 覆盖掉，否则「永久保留」失效。
+	if !mediaLimitSet.Load() {
 		mediaLimit.Store(mediaDefLimit)
 	}
 	if err := os.MkdirAll(mediaRoot, 0o755); err != nil {
@@ -141,17 +148,33 @@ func initTranscode() {
 	for _, de := range dirents {
 		id := de.Name()
 		dir := filepath.Join(mediaRoot, id)
-		if !de.IsDir() || !isHexID(id) {
+		// 丢弃时记录原因，否则缓存「莫名消失」时无从排查
+		drop := func(reason string, args ...any) {
+			slog.Warn("丢弃转码缓存："+reason, args...)
 			os.RemoveAll(dir)
 			dropped++
+		}
+		if !de.IsDir() || !isHexID(id) {
+			drop("目录名不是缓存 ID", "dir", de.Name())
 			continue
 		}
 		e := &mediaEntry{}
 		b, err := os.ReadFile(filepath.Join(dir, mediaMetaName))
-		if err != nil || json.Unmarshal(b, e) != nil || e.Status != "done" || !fileExists(filepath.Join(dir, mediaMP4Name)) {
-			// 元数据损坏、上次没转完、或成品丢失
-			os.RemoveAll(dir)
-			dropped++
+		if err != nil {
+			drop("缺少 meta.json", "id", id)
+			continue
+		}
+		if err := json.Unmarshal(b, e); err != nil {
+			drop("meta.json 损坏", "id", id, "err", err)
+			continue
+		}
+		if e.Status != "done" {
+			// 服务在转码中途退出：分段不完整，无法接着转，只能重新来过
+			drop("上次没有转完", "id", id, "name", e.Name, "status", e.Status)
+			continue
+		}
+		if !fileExists(filepath.Join(dir, mediaMP4Name)) {
+			drop("成品 mp4 缺失", "id", id, "name", e.Name)
 			continue
 		}
 		e.ID = id
@@ -159,8 +182,13 @@ func initTranscode() {
 		mediaEntries[id] = e
 		restored++
 	}
+	limitText := "不限制"
+	if l := mediaLimit.Load(); l > 0 {
+		limitText = fmtBytes(l)
+	}
 	slog.Info("转码缓存已载入", "dir", mediaRoot,
-		"restored", restored, "dropped", dropped, "used", fmtBytes(totalBytesLocked()))
+		"restored", restored, "dropped", dropped,
+		"used", fmtBytes(totalBytesLocked()), "limit", limitText)
 
 	go mediaJanitor()
 }
@@ -247,16 +275,20 @@ func evictLocked(keep string) {
 	}
 }
 
-// removeSegments 删除 HLS 分段，返回释放的字节数。
-func removeSegments(id string) int64 {
+// removeHLS 删除转码中间产物（分段与播放列表），只留下合成好的 mp4。
+// 返回释放的字节数。
+func removeHLS(e *mediaEntry) int64 {
 	var freed int64
-	matches, _ := filepath.Glob(mediaEntryFile(id, "seg_*.ts"))
+	matches, _ := filepath.Glob(mediaEntryFile(e.ID, "seg_*.ts"))
+	matches = append(matches, mediaEntryFile(e.ID, mediaListName))
 	for _, p := range matches {
 		if fi, err := os.Stat(p); err == nil {
 			freed += fi.Size()
 		}
 		os.Remove(p)
 	}
+	// 播放列表已经删掉，缓存的旧内容不能再返回，否则播放器会去拉已删除的分段
+	e.lastGood.Store("")
 	return freed
 }
 
@@ -280,7 +312,7 @@ func mediaJanitor() {
 			if now-e.lastHLS.Load() < mediaIdleSec*1000 {
 				continue
 			}
-			if freed := removeSegments(e.ID); freed > 0 {
+			if freed := removeHLS(e); freed > 0 {
 				e.Bytes = dirSize(mediaEntryDir(e.ID))
 				e.saveMeta()
 			}
