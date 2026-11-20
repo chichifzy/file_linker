@@ -126,7 +126,7 @@ export default function CachePage() {
 }
 
 function statusText(e: MediaCacheItem) {
-  if (e.status === "running") return `转换中 ${e.percent}%`;
+  if (e.status === "running") return e.mode === "copy" ? `封装中 ${e.percent}%` : `转换中 ${e.percent}%`;
   if (e.status === "error") return "转换失败";
   return "已缓存";
 }

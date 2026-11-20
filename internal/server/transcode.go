@@ -67,6 +67,7 @@ type mediaEntry struct {
 	SrcMod    int64   `json:"srcMod"`    // 源文件修改时间（UnixNano），变了就重新转
 	Duration  float64 `json:"duration"`  // 源视频时长（秒）
 	Status    string  `json:"status"`    // running / done / error
+	Mode      string  `json:"mode"`      // copy（只换封装）/ encode（重新编码）
 	Err       string  `json:"err,omitempty"`
 	Bytes     int64   `json:"bytes"`     // 缓存占用字节数
 	Created   int64   `json:"created"`   // Unix 秒
@@ -409,9 +410,10 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 					bytes = sz
 				}
 			}
+			mode := e.Mode
 			mediaMu.Unlock()
 			writeJSON(w, http.StatusOK, map[string]any{
-				"id": id, "status": status, "ready": e.isReady(), "bytes": bytes,
+				"id": id, "status": status, "mode": mode, "ready": e.isReady(), "bytes": bytes,
 			})
 			return
 		}
@@ -434,11 +436,20 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// 编码本身浏览器就吃不下（AV1/HEVC）时必须重编码；只是容器不对（mkv/avi/flv）
+	// 而编码是 H.264 时，换封装就够了：1.2GB 的片子几秒就能转完，且画质无损。
+	mode := "encode"
+	if info := probeMedia(full); !info.Playable && info.Remuxable {
+		mode = "copy"
+	}
 	e := &mediaEntry{
 		ID: id, Name: filepath.Base(full), ShareID: shareID, Rel: rel,
 		SrcSize: fi.Size(), SrcMod: fi.ModTime().UnixNano(),
-		Status: "running", Created: time.Now().Unix(), Accessed: time.Now().Unix(),
+		Status: "running", Mode: mode, Created: time.Now().Unix(), Accessed: time.Now().Unix(),
 		cancel: cancel,
+	}
+	if mode == "copy" {
+		slog.Info("容器不可直接播放，改用无损封装", "file", fi.Name())
 	}
 	mediaMu.Lock()
 	mediaEntries[id] = e
@@ -447,7 +458,21 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer func() { <-mediaSem }()
-		runErr := runHLS(ctx, full, dir, e)
+		runErr := runHLS(ctx, full, dir, e, mode)
+		// 无损封装失败（比如音轨是 TS 装不下的编码）：清掉重来，退回重新编码
+		if runErr != nil && mode == "copy" && ctx.Err() == nil {
+			slog.Warn("无损封装失败，改为重新编码", "src", full, "err", runErr)
+			mediaMu.Lock()
+			e.Mode = "encode"
+			e.percent.Store(0)
+			e.readySec.Store(0)
+			mediaMu.Unlock()
+			os.RemoveAll(dir)
+			if err := os.MkdirAll(dir, 0o755); err == nil {
+				mode = "encode"
+				runErr = runHLS(ctx, full, dir, e, mode)
+			}
+		}
 		if runErr == nil {
 			// 分段转完后合成 mp4：不变编码，只需几秒，下次打开可以直接拖动
 			runErr = muxToMP4(ctx, dir)
@@ -477,7 +502,7 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": id, "status": "running", "ready": false, "bytes": 0,
+		"id": id, "status": "running", "mode": mode, "ready": false, "bytes": 0,
 	})
 }
 
@@ -486,21 +511,26 @@ func (e *mediaEntry) isReady() bool {
 	return e.readyAt.Load() != 0
 }
 
-// runHLS 调用 ffmpeg 转成 H.264 并切成 HLS 分段，同时用 -progress 解析进度。
-func runHLS(ctx context.Context, src, dir string, e *mediaEntry) error {
-	args := []string{
-		"-hide_banner", "-y",
-		"-i", src,
-		"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-b:a", "128k",
+// runHLS 调用 ffmpeg 生成 HLS 分段，同时用 -progress 解析进度。
+// mode 为 "copy" 时只换封装（源文件编码已经可播，只是容器不对），不重编码。
+func runHLS(ctx context.Context, src, dir string, e *mediaEntry, mode string) error {
+	args := []string{"-hide_banner", "-y", "-i", src}
+	if mode == "copy" {
+		// MKV 里常带字幕/附件，mpegts 装不下，只取一路视频和一路音频
+		args = append(args, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy")
+	} else {
+		args = append(args,
+			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+			"-c:a", "aac", "-b:a", "128k")
+	}
+	args = append(args,
 		"-f", "hls",
 		"-hls_time", strconv.Itoa(mediaSegSec),
 		"-hls_list_size", "0",
 		"-hls_playlist_type", "event",
 		"-hls_segment_filename", filepath.Join(dir, "seg_%05d.ts"),
 		"-progress", "pipe:1", "-nostats",
-		filepath.Join(dir, mediaListName),
-	}
+		filepath.Join(dir, mediaListName))
 	cmd := exec.CommandContext(ctx, ffmpegPath(), args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -636,7 +666,7 @@ func (s *Server) transcodeStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "转码任务不存在或已被清除")
 		return
 	}
-	status, msg, dur, bytes := e.Status, e.Err, e.Duration, e.Bytes
+	status, msg, dur, bytes, mode := e.Status, e.Err, e.Duration, e.Bytes, e.Mode
 	mediaMu.Unlock()
 	if status == "done" {
 		if sz := mediaPlaySize(id); sz > 0 {
@@ -651,6 +681,7 @@ func (s *Server) transcodeStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":       status,
 		"error":        msg,
+		"mode":         mode,
 		"percent":      e.percent.Load(),
 		"ready":        e.isReady(),
 		"duration":     dur,
@@ -762,6 +793,7 @@ type mediaItem struct {
 	SrcSize    int64   `json:"srcSize"`
 	Duration   float64 `json:"duration"`
 	Status     string  `json:"status"`
+	Mode       string  `json:"mode"`
 	Error      string  `json:"error,omitempty"`
 	Bytes      int64   `json:"bytes"`
 	Percent    int64   `json:"percent"`
@@ -788,7 +820,7 @@ func (s *Server) listMedia(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, mediaItem{
 			ID: e.ID, Name: e.Name, ShareID: e.ShareID, ShareName: names[e.ShareID],
-			Rel: e.Rel, SrcSize: e.SrcSize, Duration: e.Duration, Status: e.Status,
+			Rel: e.Rel, SrcSize: e.SrcSize, Duration: e.Duration, Status: e.Status, Mode: e.Mode,
 			Error: e.Err, Bytes: e.Bytes, Percent: percent,
 			Created: e.Created, Accessed: e.Accessed,
 		})

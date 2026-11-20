@@ -115,9 +115,28 @@ export const thumbURL = (share: number, path: string) => `/api/fs/thumb?${qs({ s
 /** 边转边播用的 HLS 播放列表地址，Safari 可直接播放 */
 export const hlsURL = (id: string) => `/api/fs/transcode/${id}/hls/index.m3u8`;
 
+/** 视频的真实容器与编码信息。扩展名不可信，以文件头为准 */
+export type MediaInfo = {
+  /** mp4 / mov / webm / matroska / avi / flv / mpegts / unknown */
+  container: string;
+  /** H.264 / HEVC / AV1 / VP9 / … */
+  codec: string;
+  /** 音频编码，如 AAC / MP3 / Opus */
+  audio: string;
+  duration: number;
+  /** 浏览器能否直接播放这个容器 */
+  playable: boolean;
+  /** 只换封装（不重新编码）就能变成可播放的 mp4 */
+  remuxable: boolean;
+};
+
+/** 转码方式：copy 只换封装，几秒完成且画质无损；encode 重新编码，慢 */
+export type TranscodeMode = "copy" | "encode";
+
 export type TranscodeStatus = {
   status: "running" | "done" | "error";
   error?: string;
+  mode?: TranscodeMode;
   /** 0-100 */
   percent: number;
   /** 首个分段已生成，现在就能开始播放 */
@@ -140,6 +159,7 @@ export type MediaCacheItem = {
   srcSize: number;
   duration: number;
   status: "running" | "done" | "error";
+  mode?: TranscodeMode;
   error?: string;
   /** 缓存占用字节数 */
   bytes: number;
@@ -169,11 +189,11 @@ export const api = {
   dirInfo: (share: number, path: string, signal: AbortSignal) =>
     request<DirInfo>("GET", `/fs/dirinfo?${qs({ share, path })}`, undefined, signal),
   createZip: (share: number, path: string) => request<{ id: string }>("POST", `/fs/zip?${qs({ share, path })}`),
-  /** 判断视频编码（AV1/HEVC/VP9/H.264），用于播放失败时说明原因 */
-  codec: (share: number, path: string) => request<{ codec: string }>("GET", `/fs/codec?${qs({ share, path })}`),
-  /** 请求把视频转成 H.264；同一文件只会转一次，已转过时直接返回 done */
+  /** 判断视频的真实容器与编码，用于播放失败时说明原因、决定走封装还是重编码 */
+  codec: (share: number, path: string) => request<MediaInfo>("GET", `/fs/codec?${qs({ share, path })}`),
+  /** 请求把视频转成可播放的 mp4；同一文件只会转一次，已转过时直接返回 done */
   transcode: (share: number, path: string) =>
-    request<{ id: string; status: string; ready: boolean; bytes: number }>(
+    request<{ id: string; status: string; mode?: TranscodeMode; ready: boolean; bytes: number }>(
       "POST",
       `/fs/transcode?${qs({ share, path })}`,
     ),

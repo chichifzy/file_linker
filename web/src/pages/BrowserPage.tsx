@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
-import { api, errMsg, fileURL, hlsURL, thumbURL, transcodeURL, zipURL, type DirInfo, type Entry, type Share } from "../api";
+import { api, errMsg, fileURL, hlsURL, thumbURL, transcodeURL, zipURL, type DirInfo, type Entry, type MediaInfo, type Share } from "../api";
 import { useConfirm } from "../components/Confirm";
 import Modal, { type ModalHandle } from "../components/Modal";
 import { KindIcon, PlayBadge } from "../components/FileIcons";
@@ -519,8 +519,15 @@ function mediaHint(code: number): string {
   }
 }
 
+const containerName = (c: string) =>
+  c === "matroska" ? "MKV" : c === "mpegts" ? "MPEG-TS" : c.toUpperCase();
+
 /** 已知编码兼容性差时给出具体原因，比通用的错误码提示更有用 */
-function codecHint(codec: string, code: number): string {
+function codecHint(info: MediaInfo | null, code: number): string {
+  // 容器不对时说明原因：换封装不重新编码就能播，和「编码不支持」是两回事
+  if (info && !info.playable)
+    return `该文件是 ${containerName(info.container)} 封装，浏览器无法直接播放。换封装不重新编码，几秒就能转换`;
+  const codec = info?.codec ?? "";
   switch (codec) {
     case "AV1":
       return "该视频是 AV1 编码，iPhone/iPad 需要 iOS 17 以上且为 iPhone 15 Pro 及更新机型才支持。建议下载后用 VLC 等播放器观看";
@@ -556,14 +563,17 @@ function Preview({
 }) {
   const ref = useRef<ModalHandle>(null);
   const [mediaError, setMediaError] = useState<{ code: number; message: string } | null>(null);
-  const [codec, setCodec] = useState("");
+  const [info, setInfo] = useState<MediaInfo | null>(null);
   const [playSrc, setPlaySrc] = useState(""); // 非空时播放转码结果
   const [transcode, setTranscode] = useState<{
     phase: "idle" | "starting" | "streaming" | "done" | "error";
+    mode: "copy" | "encode";
     percent: number;
     readySec: number;
     error: string;
-  }>({ phase: "idle", percent: 0, readySec: 0, error: "" });
+  }>({ phase: "idle", mode: "encode", percent: 0, readySec: 0, error: "" });
+  // 容器不对但能无损封装时自动开始转换，只自动触发一次
+  const autoRemux = useRef(false);
   const timer = useRef<number | undefined>(undefined);
   const streaming = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -585,9 +595,10 @@ function Preview({
   // 切换到另一个文件时清掉上一个的播放与转码状态
   useEffect(() => {
     setMediaError(null);
-    setCodec("");
+    setInfo(null);
     setPlaySrc("");
-    setTranscode({ phase: "idle", percent: 0, readySec: 0, error: "" });
+    setTranscode({ phase: "idle", mode: "encode", percent: 0, readySec: 0, error: "" });
+    autoRemux.current = false;
     streaming.current = false;
     resumeAt.current = null;
     mediaSize.current = entry.size;
@@ -661,7 +672,7 @@ function Preview({
     mediaSize.current = bytes;
     speedRef.current = { t: 0, bytes: 0, ema: 0 };
     setPlaySrc(transcodeURL(id));
-    setTranscode({ phase: "done", percent: 100, readySec: 0, error: "" });
+    setTranscode((t) => ({ ...t, phase: "done", percent: 100, readySec: 0, error: "" }));
   };
 
   /** 首个分段已就绪，切到 HLS 边转边播 */
@@ -674,12 +685,14 @@ function Preview({
   };
 
   const startTranscode = async () => {
-    setTranscode({ phase: "starting", percent: 0, readySec: 0, error: "" });
+    setTranscode((t) => ({ ...t, phase: "starting", percent: 0, readySec: 0, error: "" }));
     setMediaError(null);
     try {
       const r = await api.transcode(share.id, entry.path);
+      const mode = r.mode === "copy" ? "copy" : "encode";
+      setTranscode((t) => ({ ...t, mode }));
       if (r.status === "error") {
-        setTranscode({ phase: "error", percent: 0, readySec: 0, error: "转码失败" });
+        setTranscode({ phase: "error", mode, percent: 0, readySec: 0, error: "转码失败" });
         return;
       }
       // 缓存里已有成品，直接播完整文件
@@ -693,7 +706,13 @@ function Preview({
           const st = await api.transcodeStatus(r.id);
           if (st.status === "error") {
             stopPolling();
-            setTranscode({ phase: "error", percent: 0, readySec: 0, error: st.error || "转码失败" });
+            setTranscode((t) => ({
+              ...t,
+              phase: "error",
+              percent: 0,
+              readySec: 0,
+              error: st.error || "转码失败",
+            }));
             return;
           }
           // 转码结束：不论之前是否在边转边播，都切成完整 mp4（可自由拖动）
@@ -703,6 +722,7 @@ function Preview({
             if (!streaming.current) beginStream(r.id, st.readySeconds);
             setTranscode((t) => ({
               ...t,
+              mode: st.mode === "copy" ? "copy" : t.mode,
               phase: "streaming",
               percent: st.percent,
               readySec: st.readySeconds,
@@ -710,13 +730,18 @@ function Preview({
             return;
           }
           // 不支持 HLS 的浏览器只能等完整文件
-          setTranscode((t) => ({ ...t, percent: st.percent, readySec: st.readySeconds }));
+          setTranscode((t) => ({
+            ...t,
+            mode: st.mode === "copy" ? "copy" : t.mode,
+            percent: st.percent,
+            readySec: st.readySeconds,
+          }));
         } catch {
           // 单次查询失败不影响，下一轮继续
         }
       }, 800);
     } catch (e) {
-      setTranscode({ phase: "error", percent: 0, readySec: 0, error: errMsg(e) });
+      setTranscode((t) => ({ ...t, phase: "error", percent: 0, readySec: 0, error: errMsg(e) }));
     }
   };
 
@@ -731,6 +756,8 @@ function Preview({
   }, [prev, next, onNavigate]);
 
   const src = fileURL(share.id, entry.path);
+  // 只是容器不对（mkv/avi 改名成 .mp4）时走无损封装，文案上要说清「不重新编码」
+  const remuxing = transcode.mode === "copy" || (!!info && !info.playable && info.remuxable);
   return (
     <Modal title={entry.name} className="image-viewer" onClose={onClose} ref={ref}>
       <div className="modal-body">
@@ -738,8 +765,12 @@ function Preview({
         {entry.kind === "video" &&
           (transcode.phase === "starting" ? (
             <div className="viewer-broken">
-              <span>正在转换编码…</span>
-              <small>正在生成第一段视频，马上开始播放</small>
+              <span>{remuxing ? "正在无损封装…" : "正在转换编码…"}</span>
+              <small>
+                {remuxing && info
+                  ? `文件实际是 ${containerName(info.container)} 封装，只换封装不重新编码，几秒就好`
+                  : "正在生成第一段视频，马上开始播放"}
+              </small>
             </div>
           ) : transcode.phase === "error" ? (
             <div className="viewer-broken">
@@ -760,13 +791,18 @@ function Preview({
               <small>
                 {playSrc
                   ? "转码后的视频仍然无法播放，建议下载后用本地播放器打开"
-                  : codecHint(codec, mediaError.code)}
+                  : codecHint(info, mediaError.code)}
               </small>
-              {codec && !playSrc && <small className="muted">视频编码：{codec}</small>}
+              {info?.codec && !playSrc && (
+                <small className="muted">
+                  容器 {containerName(info.container)} · 视频 {info.codec}
+                  {info.audio ? ` · 音频 ${info.audio}` : ""}
+                </small>
+              )}
               <span className="row">
                 {!playSrc && (
                   <button type="button" className="secondary" onClick={startTranscode}>
-                    转换编码
+                    {remuxing ? "无损转换" : "转换编码"}
                   </button>
                 )}
                 <a className="viewer-download" href={src} target="_blank" rel="noreferrer">
@@ -828,12 +864,17 @@ function Preview({
                   onError={(e) => {
                     const err = e.currentTarget.error;
                     setMediaError({ code: err?.code ?? -1, message: err?.message ?? "" });
-                    // 原始文件失败时才查编码；转码文件失败说明转换没解决问题
+                    // 原始文件失败时才查真实容器与编码；转码文件失败说明转换没解决问题
                     if (!playSrc) {
-                      api.codec(share.id, entry.path).then(
-                        (d) => setCodec(d.codec),
-                        () => {},
-                      );
+                      api.codec(share.id, entry.path).then((d) => {
+                        setInfo(d);
+                        // 容器不对但编码是 H.264（mkv/avi 改名成 .mp4）：换封装几秒就好，
+                        // 不必等用户再点一次按钮
+                        if (!d.playable && d.remuxable && !autoRemux.current) {
+                          autoRemux.current = true;
+                          void startTranscode();
+                        }
+                      }, () => {});
                     }
                   }}
                 />
@@ -863,7 +904,9 @@ function Preview({
               </div>
               {transcode.phase === "streaming" && (
                 <div className="transcode-bar">
-                  <span>正在转换 {transcode.percent}%</span>
+                  <span>
+                    {transcode.mode === "copy" ? "正在无损封装" : "正在转换"} {transcode.percent}%
+                  </span>
                   <span className="muted">可播放至 {fmtClock(transcode.readySec)}</span>
                 </div>
               )}

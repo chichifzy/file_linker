@@ -45,6 +45,8 @@ file_linker create-admin <用户ID> <用户名>    创建管理员（只能有�
 
 部分视频（AV1、HEVC 等）手机浏览器无法解码。这类视频播放失败时，页面会显示它的实际编码，并给出「转换编码」按钮，点击后由运行服务的电脑用 ffmpeg 转成 H.264。
 
+如果只是**容器不对**（例如把 `.mkv` 改名成 `.mp4`，或者直接用 `.mkv` / `.avi` / `.flv` 文件），而视频是 H.264、音频是 AAC/MP3，那么不需要重新编码，只换封装就够了：点击后立刻开始转换，1.2GB 的片子几秒完成，画质无损。这种文件在列表里直接点开就会自动开始，不需要先点按钮。
+
 - 转码过程中边转边播：播放器此时拿到的是 HLS 播放列表，按“直播”处理，时长还在增长，不能往前拖。
 - 转码完成后自动切换成普通 mp4 并从当前进度接着播，此时可以自由拖动进度条。
 - 最终只保留一个 mp4 成品（分段与播放列表在完成约 1 分钟后清理），缓存在系统缓存目录（Windows 为 `%LOCALAPPDATA%\file_linker\media`），**默认不限制容量、永久保留**，重启服务后仍然有效，同一个视频再次打开直接播放。
@@ -68,6 +70,18 @@ INFO media file=xxx.mp4 range="bytes=0-" status=206 bytes=26.0MB duration=312ms 
 ```
 
 服务端本身是流式的（支持 Range，不会等整段读完再发）。如果某个请求的 `bytes` 接近整个文件大小，说明是播放器在整段下载。
+
+## 扩展名不可信：按文件头判断容器
+
+有些文件扩展名是 `.mp4`，实际是 Matroska(MKV) 封装。服务端原来按扩展名给 `Content-Type: video/mp4`，iOS Safari 拿它当 MP4 解析，永远解析不出索引，于是退化成不带 Range 的整段下载——1.2GB 的片子要下三十多秒才报错。
+
+现在输出视频前会先读 64 字节文件头判断真实容器（`ftyp` → mp4/mov、`1A45DFA3` → Matroska/WebM、`RIFF....AVI ` → AVI、`FLV` → FLV、`0x47` → MPEG-TS）：
+
+- 浏览器装不下的容器（mkv / avi / flv / ts / ps）直接返回 `415`，响应带 `X-Container`，浏览器立刻报错而不是白下几个 GB；
+- 前端拿到 `415` 后调用 `/api/fs/codec`，服务端用 ffmpeg 读出真实容器、视频编码、音频编码与时长，返回 `{container, codec, audio, duration, playable, remuxable}`；
+- `playable=false && remuxable=true` 时前端自动开始转换（走上面的无损封装），否则显示「转换编码」按钮。
+
+`.mkv` / `.avi` / `.flv` / `.wmv` / `.mpg` / `.mpeg` / `.m2ts` 也被当作视频列出，点开同样是这条路径。
 
 ## 索引在文件尾的 MP4（虚拟 faststart）
 

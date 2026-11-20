@@ -22,7 +22,9 @@ var (
 		"sh", "bash", "zsh", "bat", "cmd", "ps1", "sql", "lua", "r", "dart", "gradle", "properties", "env",
 		"gitignore", "dockerfile", "makefile", "srt", "vtt", "tex", "rst", "adoc", "org")
 	imageExts = setOf("jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif", "ico")
-	videoExts = setOf("mp4", "m4v", "webm", "mov", "ogv")
+	// mkv/avi/flv 等浏览器不支持的容器也当作视频：点开后会先在服务端换封装
+	// （编码是 H.264 时几秒完成），不必让用户先下载再找播放器
+	videoExts = setOf("mp4", "m4v", "webm", "mov", "ogv", "mkv", "avi", "flv", "wmv", "mpg", "mpeg", "m2ts")
 )
 
 // 文本预览最多读取的字节数，前端通过 Range 请求只取开头这一段。
@@ -186,10 +188,19 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	if download {
 		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fi.Name()}))
 	}
-	// 索引在文件尾（moov 在 mdat 之后）的视频，给播放器一个「索引在前」的虚拟视图：
-	// 否则 iOS Safari 那种整段顺序下载的请求，必须读完整个文件才能开始播放。
-	// 下载仍然给原文件，保证字节完全一致。
 	if kind == "video" && !download {
+		// 扩展名不可信：有把 mkv 改名成 .mp4 的文件，按扩展名给 video/mp4 会让
+		// iOS Safari 一路下载到文件尾都解析不出索引（1.2GB 的片子下了三十多秒）。
+		// 这种容器直接回 415，让前端立刻拿到真实容器并走「无损封装」。
+		if c := sniffOpened(f); !containerPlayable(c) {
+			h.Set("X-Container", c)
+			writeError(w, http.StatusUnsupportedMediaType,
+				"该文件实际是 "+containerLabel(c)+" 封装，浏览器无法直接播放")
+			return
+		}
+		// 索引在文件尾（moov 在 mdat 之后）的视频，给播放器一个「索引在前」的虚拟视图：
+		// 否则 iOS Safari 那种整段顺序下载的请求，必须读完整个文件才能开始播放。
+		// 下载仍然给原文件，保证字节完全一致。
 		if plan, err := faststartPlan(full, fi, f); err == nil && plan != nil {
 			h.Set("X-Faststart", "virtual")
 			http.ServeContent(w, r, fi.Name(), fi.ModTime(), &faststartReader{f: f, p: plan})
@@ -200,12 +211,17 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // MP4 sample entry 里的编码标识。av01 必须在 avc1 之前判断。
+// 后面几个是 Matroska 的 CodecID，用于没装 ffmpeg 时的兜底判断。
 var videoCodecMarkers = []struct{ marker, name string }{
 	{"av01", "AV1"},
 	{"hvc1", "HEVC"},
 	{"hev1", "HEVC"},
 	{"vp09", "VP9"},
 	{"avc1", "H.264"},
+	{"V_MPEGH/ISO/HEVC", "HEVC"},
+	{"V_MPEG4/ISO/AVC", "H.264"},
+	{"V_AV1", "AV1"},
+	{"V_VP9", "VP9"},
 }
 
 // videoCodec 读取 MP4 的文件头和文件尾判断视频编码（moov 可能位于任意一端）。
@@ -238,14 +254,32 @@ func videoCodec(full string) string {
 	return ""
 }
 
-// fileCodec 返回视频编码，供前端在播放失败时给出准确原因。
+// containerLabel 把容器内部名换成给人看的说法。
+func containerLabel(container string) string {
+	switch container {
+	case "matroska":
+		return "MKV"
+	case "avi":
+		return "AVI"
+	case "flv":
+		return "FLV"
+	case "mpegts":
+		return "MPEG-TS"
+	case "mpegps":
+		return "MPEG-PS"
+	}
+	return container
+}
+
+// fileCodec 返回视频的容器与编码信息，供前端在播放失败时给出准确原因，
+// 并决定走「无损封装」还是「重新编码」。
 func (s *Server) fileCodec(w http.ResponseWriter, r *http.Request) {
 	_, full, _, err := s.resolve(r)
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"codec": videoCodec(full)})
+	writeJSON(w, http.StatusOK, probeMedia(full))
 }
 
 const dirInfoTimeout = 15 * time.Second
