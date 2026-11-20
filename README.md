@@ -67,7 +67,21 @@ file_linker create-admin <用户ID> <用户名>    创建管理员（只能有�
 INFO media file=xxx.mp4 range="bytes=0-" status=206 bytes=26.0MB duration=312ms ua=iPhone/Safari
 ```
 
-服务端本身是流式的（支持 Range，不会等整段读完再发）。如果某个请求的 `bytes` 接近整个文件大小，说明是播放器在整段下载——常见原因是 MP4 的索引（`moov`）在文件尾，移动端播放器只能读到末尾才能开始解析。这种片子可以用 `ffmpeg -i in.mp4 -c copy -movflags +faststart out.mp4` 无损重封装一次。
+服务端本身是流式的（支持 Range，不会等整段读完再发）。如果某个请求的 `bytes` 接近整个文件大小，说明是播放器在整段下载。
+
+## 索引在文件尾的 MP4（虚拟 faststart）
+
+很多下载来的 MP4 把索引（`moov`）放在文件末尾。这类文件 iOS Safari 打开时经常直接发一个不带 Range 的 GET，必须读完整个文件才能解析索引，表现就是「文件越大等越久，1GB 基本打不开」。
+
+服务端遇到这种文件时不会去复制一份，而是在内存里把 `moov` 挪到流的最前面，并修正它内部记录的 chunk 偏移（整段顺序移动，所有偏移的增量相同），再用虚拟的 ReadSeeker 交给 `ServeContent`：
+
+- 客户端拿到的仍是一个结构完全合法的 MP4，`Content-Length` 与原文件一致，Range / 拖动进度条照常工作
+- 磁盘占用为零，开播即时（索引在前，播放器读几百 KB 就能开始）
+- 只处理「单个 mdat、非分片、moov 在 mdat 之后」的普通 MP4；其他结构原样输出
+- 下载链接始终给原文件，保证下载回来的字节与磁盘上完全一致
+- 这类响应会带一个 `X-Faststart: virtual` 响应头，便于确认是否走了虚拟视图
+
+解析结果（头部 + 修正后的 moov）按「路径 + 大小 + 修改时间」缓存在内存里，最多 24 个文件 / 64MB，避免每个 Range 请求都重新读一遍索引。
 
 ## 安全说明
 

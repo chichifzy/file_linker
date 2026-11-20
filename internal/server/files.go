@@ -186,6 +186,16 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	if download {
 		h.Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": fi.Name()}))
 	}
+	// 索引在文件尾（moov 在 mdat 之后）的视频，给播放器一个「索引在前」的虚拟视图：
+	// 否则 iOS Safari 那种整段顺序下载的请求，必须读完整个文件才能开始播放。
+	// 下载仍然给原文件，保证字节完全一致。
+	if kind == "video" && !download {
+		if plan, err := faststartPlan(full, fi, f); err == nil && plan != nil {
+			h.Set("X-Faststart", "virtual")
+			http.ServeContent(w, r, fi.Name(), fi.ModTime(), &faststartReader{f: f, p: plan})
+			return
+		}
+	}
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 }
 
