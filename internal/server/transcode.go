@@ -394,21 +394,32 @@ func validPlaylist(s string) bool {
 		strings.HasSuffix(s, "\n")
 }
 
-// lookupTranscode 只查询是否已有现成的转码缓存，不会创建任务，也不会碰 ffmpeg。
-// 前端在开始播放之前先问一次：命中就直接播缓存，不再「先播原文件、失败后才提示转码」。
+// lookupTranscode 查询是否已有现成的转码缓存，并顺带给出容器与编码信息。
+// 前端在开始播放之前先问一次：
+//   - 命中缓存就直接播成品，不再「先播原文件、失败后才提示转码」；
+//   - 没命中时看返回的 encoding，AV1/HEVC 这类浏览器解不了的可以立刻提示，
+//     不用等它把数据拉下来、尝试解码几十秒后才报错。
+//
 // 改过缓存目录（缓存已迁到新目录）之后，这一步也照样能认出老缓存。
 func (s *Server) lookupTranscode(w http.ResponseWriter, r *http.Request) {
-	miss := func() {
-		writeJSON(w, http.StatusOK, map[string]any{"cached": false})
+	// 没有缓存时把探测结果一起带回去。探测有缓存且 mp4 只读文件头尾，开销很小
+	miss := func(full string) {
+		resp := map[string]any{"cached": false}
+		if full != "" {
+			if info := probeMedia(full); info != nil {
+				resp["encoding"] = info
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 	_, full, _, err := s.resolve(r)
 	if err != nil {
-		miss()
+		miss("")
 		return
 	}
 	fi, err := os.Stat(full)
 	if err != nil || fi.IsDir() {
-		miss()
+		miss("")
 		return
 	}
 	id := mediaKey(full, fi.Size(), fi.ModTime().UnixNano())
@@ -421,14 +432,14 @@ func (s *Server) lookupTranscode(w http.ResponseWriter, r *http.Request) {
 	mediaMu.Unlock()
 	// 失败/不存在都当作没有缓存；正在转的交给正常流程（同一条目，可以边转边播）
 	if status != "done" && status != "running" {
-		miss()
+		miss(full)
 		return
 	}
 	bytes := int64(0)
 	if status == "done" {
 		// 状态是 done 但成品被手动删掉时不算命中
 		if bytes = mediaPlaySize(id); bytes <= 0 {
-			miss()
+			miss(full)
 			return
 		}
 	}
@@ -467,19 +478,27 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 		if e.Status != "error" {
 			status := e.Status
 			bytes := e.Bytes
+			stale := false
 			if status == "done" {
 				if sz := mediaPlaySize(id); sz > 0 {
 					bytes = sz
+				} else {
+					// 记录说转完了，但成品文件不见了（目录被手动清过、磁盘被清理）：
+					// 不能当命中，否则前端会去播一个 404 的地址，只能重新转一遍
+					stale = true
 				}
 			}
-			mode := e.Mode
-			name := e.Name
-			mediaMu.Unlock()
-			slog.Info("转码缓存命中", "file", name, "id", id, "status", status)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"id": id, "status": status, "mode": mode, "ready": e.isReady(), "bytes": bytes,
-			})
-			return
+			if !stale {
+				mode := e.Mode
+				name := e.Name
+				mediaMu.Unlock()
+				slog.Info("转码缓存命中", "file", name, "id", id, "status", status)
+				writeJSON(w, http.StatusOK, map[string]any{
+					"id": id, "status": status, "mode": mode, "ready": e.isReady(), "bytes": bytes,
+				})
+				return
+			}
+			slog.Warn("缓存成品缺失，重新转码", "id", id, "name", e.Name)
 		}
 		delete(mediaEntries, id)
 	}

@@ -525,19 +525,43 @@ const containerName = (c: string) =>
 /** 已知编码兼容性差时给出具体原因，比通用的错误码提示更有用 */
 function codecHint(info: MediaInfo | null, code: number): string {
   // 容器不对时说明原因：换封装不重新编码就能播，和「编码不支持」是两回事
-  if (info && !info.playable)
-    return `该文件是 ${containerName(info.container)} 封装，浏览器无法直接播放。换封装不重新编码，几秒就能转换`;
+  if (info && !info.playable) {
+    const c = containerName(info.container);
+    if (info.remuxable) return `该文件是 ${c} 封装，浏览器无法直接播放。换封装不重新编码，几秒就能转换`;
+    if (info.codec) return `该文件是 ${c} 封装、${info.codec} 编码，浏览器解不了，需要重新转码（会比较慢）`;
+    return `该文件是 ${c} 封装，浏览器无法直接播放，需要转换后才能观看`;
+  }
   const codec = info?.codec ?? "";
   switch (codec) {
     case "AV1":
-      return "该视频是 AV1 编码，iPhone/iPad 需要 iOS 17 以上且为 iPhone 15 Pro 及更新机型才支持。建议下载后用 VLC 等播放器观看";
+      return "该视频是 AV1 编码，多数手机浏览器解不了（iPhone 需 iOS 17 以上且为 iPhone 15 Pro 及更新机型）。点「转换编码」可在线观看，或下载后用 VLC 等播放器打开";
     case "HEVC":
-      return "该视频是 HEVC(H.265) 编码，当前浏览器不支持。建议下载后观看";
+      return "该视频是 HEVC(H.265) 编码，当前浏览器不支持。点「转换编码」可在线观看，或下载后播放";
     case "VP9":
-      return "该视频是 VP9 编码，Safari 支持有限。建议下载后观看";
+      return "该视频是 VP9 编码，Safari 支持有限。点「转换编码」可在线观看，或下载后播放";
     default:
       return mediaHint(code);
   }
+}
+
+/** 编码名 → 浏览器能识别的 MIME codecs 参数 */
+const codecMime: Record<string, string> = {
+  "H.264": 'video/mp4; codecs="avc1.42E01E"',
+  HEVC: 'video/mp4; codecs="hvc1.1.6.L93.B0"',
+  AV1: 'video/mp4; codecs="av01.0.05M.08"',
+  VP9: 'video/webm; codecs="vp9"',
+  VP8: 'video/webm; codecs="vp8"',
+  "MPEG-4": 'video/mp4; codecs="mp4v.20.8"',
+};
+
+/**
+ * 浏览器能不能解这个编码。false 表示明确不支持 —— 可以立刻提示，
+ * 不用等它把数据拉下来、试着解码很久才报错；true 表示支持或判断不了，交给浏览器自己试。
+ */
+function canPlayCodec(codec: string): boolean {
+  const mime = codecMime[codec];
+  if (!mime) return true;
+  return document.createElement("video").canPlayType(mime) !== "";
 }
 
 /** Safari 原生支持 HLS，Chrome/Firefox 不支持，用来决定能不能边转边播 */
@@ -625,22 +649,39 @@ function Preview({
     api
       .transcodeLookup(share.id, entry.path)
       .then((r) => {
-        if (!alive || !r.cached) return;
-        if (r.status === "running") {
-          // 还在转：走正常流程，可以边转边播
-          void startTranscode();
+        if (!alive) return;
+        if (r.cached) {
+          if (r.status === "running") {
+            // 还在转：走正常流程，可以边转边播
+            void startTranscode();
+            return;
+          }
+          mediaSize.current = r.bytes || entry.size;
+          speedRef.current = { t: 0, bytes: 0, ema: 0 };
+          setPlaySrc(transcodeURL(r.id));
+          setTranscode({
+            phase: "done",
+            mode: r.mode === "copy" ? "copy" : "encode",
+            percent: 100,
+            readySec: 0,
+            error: "",
+          });
           return;
         }
-        mediaSize.current = r.bytes || entry.size;
-        speedRef.current = { t: 0, bytes: 0, ema: 0 };
-        setPlaySrc(transcodeURL(r.id));
-        setTranscode({
-          phase: "done",
-          mode: r.mode === "copy" ? "copy" : "encode",
-          percent: 100,
-          readySec: 0,
-          error: "",
-        });
+        // 没有缓存：借用顺带返回的编码信息，在浏览器自己失败之前就把原因说清楚。
+        // AV1/HEVC 这类解不了的编码，原来要等播放器拉一段数据、试解码很久才报错
+        const info = r.encoding;
+        if (!info) return;
+        setInfo(info);
+        if (!info.playable) {
+          // 容器不对且只能换封装的（MKV 里装 H.264）直接开始无损封装
+          if (info.remuxable) void startTranscode();
+          else setMediaError({ code: 4, message: "" });
+          return;
+        }
+        if (info.codec && !canPlayCodec(info.codec)) {
+          setMediaError({ code: 4, message: "" });
+        }
       })
       .catch(() => {
         // 查询失败不影响正常播放，按原样试原文件
