@@ -1,15 +1,19 @@
 @echo off
-rem 从源码构建并启动服务（Windows），双击运行即可。
-rem   start.bat          构建并启动（首次运行会引导创建管理员）
-rem   start.bat build    只构建可执行文件 bin\file_linker.exe
-rem 缺少 Go / Node.js / pnpm 时会询问是否自动安装（Go 和 Node.js 通过 winget 安装）。
 chcp 65001 >nul
+rem Build and start the service on Windows. Double-click this file to run.
+rem   start.bat          build and start (asks to create an admin account on first run)
+rem   start.bat build    build only, output bin\file_linker.exe
+rem Go / Node.js / pnpm are installed through winget when missing.
+rem ffmpeg is optional: only the video "convert encoding" feature needs it.
+rem NOTE: keep every rem line ASCII. Chinese comments before chcp take effect
+rem are decoded with the ANSI code page and get mis-split into commands.
 setlocal
 cd /d "%~dp0"
 
 call :need go "Go" GoLang.Go "https://go.dev/dl/" || goto fail
 call :need node "Node.js" OpenJS.NodeJS.LTS "https://nodejs.org/" || goto fail
 call :need_pnpm || goto fail
+call :optional_ffmpeg
 
 echo ==^> 构建前端
 pushd web
@@ -18,6 +22,10 @@ call pnpm build || (popd & goto fail)
 popd
 
 echo ==^> 构建可执行文件
+rem Fallback to a domestic Go module mirror when using the default proxy.
+for /f "delims=" %%p in ('go env GOPROXY') do set "CUR_GOPROXY=%%p"
+if /i "%CUR_GOPROXY%"=="https://proxy.golang.org,direct" set "GOPROXY=https://goproxy.cn,direct"
+if /i "%CUR_GOPROXY%"=="https://proxy.golang.org,direct" set "GOSUMDB=sum.golang.google.cn"
 set CGO_ENABLED=0
 go build -trimpath -ldflags="-s -w" -o bin\file_linker.exe . || goto fail
 
@@ -52,8 +60,8 @@ pause
 exit /b 1
 
 rem ---------------------------------------------------------------------------
-rem :need 命令 显示名 winget包ID 下载地址
-rem 命令不存在时询问是否用 winget 自动安装；选 N 或无法安装时提示手动安装方法。
+rem :need command display-name winget-id download-url
+rem Ask before installing via winget; if declined or unavailable, print manual steps.
 :need
 where %1 >nul 2>nul && exit /b 0
 echo.
@@ -76,7 +84,28 @@ where %1 >nul 2>nul && (echo %~2 安装完成。& exit /b 0)
 echo %~2 安装失败或尚未生效。如果上面显示已安装，请关闭本窗口后重新双击 start.bat；否则请手动安装：%~4
 exit /b 1
 
-rem pnpm 通过 Node.js 自带的 npm 安装
+rem ffmpeg is only needed by the "convert encoding" feature (AV1/HEVC -> H.264).
+rem Missing it does not block browsing or downloading, so never fail here.
+:optional_ffmpeg
+where ffmpeg >nul 2>nul && exit /b 0
+echo.
+where winget >nul 2>nul || (
+  echo 未找到 ffmpeg，视频「转换编码」功能不可用。需要时手动安装：https://ffmpeg.org/download.html
+  exit /b 0
+)
+choice /c YN /m "未找到 ffmpeg（视频转换编码需要），是否自动安装"
+if errorlevel 2 (
+  echo 已跳过，视频「转换编码」功能不可用。
+  exit /b 0
+)
+echo ==^> 正在安装 ffmpeg
+winget install --exact --id Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
+call :refresh_path
+where ffmpeg >nul 2>nul && (echo ffmpeg 安装完成。& exit /b 0)
+echo ffmpeg 安装失败或还没生效。可以手动安装后重新双击 start.bat，不影响其他功能。
+exit /b 0
+
+rem pnpm is installed through the npm bundled with Node.js
 :need_pnpm
 where pnpm >nul 2>nul && exit /b 0
 echo.
@@ -93,9 +122,9 @@ where pnpm >nul 2>nul && (echo pnpm 安装完成。& exit /b 0)
 echo pnpm 安装失败或尚未生效。请关闭本窗口后重新双击 start.bat，或手动运行 npm install -g pnpm。
 exit /b 1
 
-rem 安装程序只修改注册表中的 PATH，当前窗口看不到；从注册表重新读取，免得用户重开窗口
+rem Installers only update the registry PATH; reload it so this window sees new tools.
 :refresh_path
 for /f "usebackq delims=" %%p in (`powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')"`) do set "PATH=%%p"
-rem npm 全局命令目录，新装的 Node.js 有时还没写入 PATH
+rem Global npm bin dir; a fresh Node.js install may not have it in PATH yet.
 set "PATH=%PATH%;%APPDATA%\npm"
 exit /b 0
