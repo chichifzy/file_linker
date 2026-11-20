@@ -3,10 +3,12 @@ package server
 
 import (
 	"database/sql"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -106,11 +108,26 @@ func spaHandler(dist fs.FS) http.Handler {
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	n      int64 // 已经写出的字节数，用于发现「客户端在整段下载」这类异常
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.n += int64(n)
+	return n, err
+}
+
+// ReadFrom 保留底层 ResponseWriter 的零拷贝路径（文件→socket），
+// 包一层 Write 统计字节数而不牺牲大文件吞吐。
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	n, err := io.Copy(r.ResponseWriter, src)
+	r.n += n
+	return n, err
 }
 
 // Unwrap 让 http.ResponseController 等能拿到原始 ResponseWriter。
@@ -121,12 +138,48 @@ func logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+		dur := time.Since(start)
 		// 视频播放和 HLS 分段会产生大量请求，只记录其他接口；这些请求仅在失败时记录，便于排查播放问题
 		if strings.HasPrefix(r.URL.Path, "/api/") && (!quietPath(r.URL.Path) || rec.status >= 400) {
 			slog.Info("request", "method", r.Method, "path", r.URL.Path,
-				"status", rec.status, "duration", time.Since(start))
+				"status", rec.status, "duration", dur)
+		}
+		// 正常开播只要 20~30MB，但客户端一旦退化成「整段下载」或卡住，
+		// 这个请求会拉走整个文件、持续几十秒。留一行摘要，方便对照手机端的表现
+		if r.URL.Path == "/api/fs/file" && (rec.n >= 20<<20 || dur >= 3*time.Second) {
+			slog.Info("media",
+				"file", filepath.Base(r.URL.Query().Get("path")),
+				"range", r.Header.Get("Range"),
+				"status", rec.status,
+				"bytes", fmtBytes(rec.n),
+				"duration", dur.Round(time.Millisecond),
+				"ua", shortUA(r.UserAgent()))
 		}
 	})
+}
+
+// shortUA 从 User-Agent 里摘出设备和浏览器，整串太长。
+func shortUA(ua string) string {
+	var parts []string
+	for _, k := range []string{"iPhone", "iPad", "Android", "Macintosh", "Windows"} {
+		if strings.Contains(ua, k) {
+			parts = append(parts, k)
+			break
+		}
+	}
+	for _, k := range []string{"Edg", "Chrome", "Safari", "Firefox"} {
+		if strings.Contains(ua, k) {
+			parts = append(parts, k)
+			break
+		}
+	}
+	if len(parts) == 0 {
+		if len(ua) > 40 {
+			return ua[:40]
+		}
+		return ua
+	}
+	return strings.Join(parts, "/")
 }
 
 // quietPath 标记高频的媒体请求，成功时不写日志。
