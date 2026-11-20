@@ -168,6 +168,21 @@ export type MediaCacheItem = {
   accessed: number;
 };
 
+/** 转码缓存列表，附带缓存目录信息 */
+export type MediaCacheList = {
+  entries: MediaCacheItem[];
+  /** 已占用字节数 */
+  used: number;
+  /** 容量上限，0 表示不限制 */
+  limit: number;
+  /** 缓存目录（运行服务的电脑上的绝对路径），仅管理员可见 */
+  dir?: string;
+  /** 默认缓存目录，方便「恢复默认」，仅管理员可见 */
+  defaultDir?: string;
+  /** 当前账号能否修改：管理员，且在本机或已允许远程修改 */
+  editable: boolean;
+};
+
 /** 文本预览最多读取的字节数，与后端一致 */
 export const TEXT_PREVIEW_LIMIT = 1 << 20;
 
@@ -198,7 +213,10 @@ export const api = {
       `/fs/transcode?${qs({ share, path })}`,
     ),
   transcodeStatus: (id: string) => request<TranscodeStatus>("GET", `/fs/transcode/${id}`),
-  mediaList: () => request<{ entries: MediaCacheItem[]; used: number; limit: number }>("GET", "/fs/media"),
+  mediaList: () => request<MediaCacheList>("GET", "/fs/media"),
+  /** 修改转码缓存目录，已有缓存会迁移过去（调用返回时迁移已经完成） */
+  setMediaDir: (dir: string) =>
+    request<{ dir: string; moved: number; bytes: number }>("POST", "/admin/media-dir", { dir }),
   deleteMedia: (id: string) => request<void>("DELETE", `/fs/media/${id}`),
   clearMedia: () => request<{ ok: boolean; count: number }>("DELETE", "/fs/media"),
   zipStatus: (id: string) => request<ZipStatus>("GET", `/fs/zip/${id}`),

@@ -1,7 +1,8 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type MediaCacheItem } from "../api";
 import { useAction, useLoader } from "../hooks";
 import { useConfirm } from "../components/Confirm";
+import DirPicker from "../components/DirPicker";
 import Messages from "../components/Messages";
 import { fmtClock, fmtSize } from "./BrowserPage";
 
@@ -11,6 +12,10 @@ export default function CachePage() {
   const { data, error, load } = useLoader(loader);
   const action = useAction(load);
   const confirm = useConfirm();
+  // 修改缓存目录：编辑中、输入框内容、是否在浏览目录
+  const [editing, setEditing] = useState(false);
+  const [dirInput, setDirInput] = useState("");
+  const [picking, setPicking] = useState(false);
 
   // 有任务在转码时定期刷新，进度和占用会变化
   const running = data?.entries.some((e) => e.status === "running") ?? false;
@@ -38,6 +43,30 @@ export default function CachePage() {
       danger: true,
     });
     if (ok) action.run(() => api.clearMedia(), "已清空缓存");
+  };
+
+  const startEdit = () => {
+    setDirInput(data?.dir ?? "");
+    setPicking(false);
+    setEditing(true);
+  };
+
+  const saveDir = async () => {
+    const dir = dirInput.trim();
+    if (!dir || !data) return;
+    const n = data.entries.length;
+    const ok = await confirm({
+      title: "修改缓存目录",
+      message:
+        n > 0
+          ? `把 ${n} 个缓存（${fmtSize(data.used)}）迁移到「${dir}」，完成后原目录会被清空。迁移期间请不要关闭服务。`
+          : `把缓存目录改为「${dir}」。`,
+      confirmText: n > 0 ? "开始迁移" : "确定修改",
+    });
+    if (!ok) return;
+    if (await action.run(() => api.setMediaDir(dir), n > 0 ? `已迁移 ${n} 个缓存` : "缓存目录已修改")) {
+      setEditing(false);
+    }
   };
 
   const limit = data?.limit ?? 0;
@@ -70,6 +99,70 @@ export default function CachePage() {
             <b>{limit > 0 ? fmtSize(limit) : "不限"}</b>
             <span>{limit > 0 ? "容量上限" : "永久保留"}</span>
           </div>
+        </div>
+      )}
+      {data?.dir && (
+        <div className="card cache-dir">
+          <div className="cache-dir-head">
+            <div className="cache-dir-text">
+              <span className="cache-dir-label">缓存位置</span>
+              <code className="cache-dir-path" title={data.dir}>
+                {data.dir}
+              </code>
+            </div>
+            {data.editable && !editing && (
+              <button className="secondary" onClick={startEdit} disabled={action.busy}>
+                修改目录
+              </button>
+            )}
+          </div>
+          {editing && (
+            <div className="cache-dir-form">
+              <input
+                value={dirInput}
+                onChange={(e) => setDirInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void saveDir();
+                  if (e.key === "Escape") setEditing(false);
+                }}
+                placeholder="例如 D:\\video-cache（请选一个空目录）"
+                spellCheck={false}
+                autoFocus
+                disabled={action.busy}
+              />
+              <div className="row actions">
+                <button className="secondary" onClick={() => setPicking(true)} disabled={action.busy}>
+                  浏览本机目录
+                </button>
+                {data.defaultDir && dirInput !== data.defaultDir && (
+                  <button className="secondary" onClick={() => setDirInput(data.defaultDir ?? "")} disabled={action.busy}>
+                    用默认目录
+                  </button>
+                )}
+                <button className="secondary" onClick={() => setEditing(false)} disabled={action.busy}>
+                  取消
+                </button>
+                <button onClick={saveDir} disabled={action.busy || !dirInput.trim()}>
+                  {action.busy ? "正在迁移…" : "保存并迁移"}
+                </button>
+              </div>
+              <p className="muted cache-dir-hint">
+                换到空间更大的磁盘时用这里。已有的缓存会自动搬到新目录，原目录随后清空，不用重新转换；
+                正在转换的视频需要等它完成或在下面删除后再修改。
+              </p>
+              {picking && (
+                <DirPicker
+                  busy={action.busy}
+                  pickLabel="用这个目录"
+                  onCancel={() => setPicking(false)}
+                  onPick={(p) => {
+                    setDirInput(p);
+                    setPicking(false);
+                  }}
+                />
+              )}
+            </div>
+          )}
         </div>
       )}
       {data &&

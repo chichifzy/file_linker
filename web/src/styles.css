@@ -423,6 +423,21 @@ tbody tr:hover { background: #f8fcfa; }
 }
 .cache-stat span { font-size: 12px; color: var(--text-3); }
 
+/* 缓存位置：显示目录 + 修改（迁移）表单 */
+.cache-dir { margin: 0 0 16px; }
+.cache-dir-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cache-dir-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.cache-dir-label { font-size: 12px; color: var(--text-3); }
+.cache-dir-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px; color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.cache-dir-form { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.cache-dir-form input { width: 100%; }
+.cache-dir-hint { margin: 0; font-size: 12px; line-height: 1.6; }
+.cache-dir-form .card { margin-top: 4px; }
+
 .cache-list {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
@@ -526,6 +541,9 @@ tbody tr:hover { background: #f8fcfa; }
   .cache-act { grid-area: act; align-self: start; justify-self: end; margin-left: 0; }
   .cache-src { white-space: normal; overflow-wrap: anywhere; }
   .cache-bar { max-width: none; }
+  /* 缓存位置编辑：四个按钮排成 2×2，主按钮占右下一格，不挤在一行 */
+  .cache-dir-form .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .cache-dir-path { font-size: 12px; }
 
   /* 弹窗：底部按钮在窄屏下可换行 */
   dialog.modal { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
