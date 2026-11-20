@@ -1,17 +1,44 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
-import { api, errMsg, fileURL, hlsURL, transcodeURL, zipURL, type DirInfo, type Entry, type Share } from "../api";
+import { api, errMsg, fileURL, hlsURL, thumbURL, transcodeURL, zipURL, type DirInfo, type Entry, type Share } from "../api";
 import { useConfirm } from "../components/Confirm";
 import Modal, { type ModalHandle } from "../components/Modal";
 import { KindIcon, PlayBadge } from "../components/FileIcons";
 
 const HIDDEN_KEY = "showHidden";
 
-/** 视频缩略图：滚动到可见时才加载，#t=0.1 让浏览器（尤其 Safari）显示第一帧 */
-function VideoThumb({ src }: { src: string }) {
+// 缩略图请求排队：一个目录里几十个视频时，浏览器会同时发出几十个请求把连接
+// 占满，点开视频要排在它们后面。这里限制同时在途的缩略图请求数。
+const THUMB_CONCURRENCY = 3;
+let thumbRunning = 0;
+const thumbWaiting: (() => void)[] = [];
+
+function acquireThumb(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const grant = () => {
+      thumbRunning++;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        thumbRunning--;
+        thumbWaiting.shift()?.();
+      });
+    };
+    if (thumbRunning < THUMB_CONCURRENCY) grant();
+    else thumbWaiting.push(grant);
+  });
+}
+
+/** 视频缩略图：滚动到可见才加载，同一时刻最多 3 个在途；服务端抽帧失败时退回用 <video> 取首帧 */
+function VideoThumb({ thumb, src }: { thumb: string; src: string }) {
   const ref = useRef<HTMLSpanElement>(null);
+  const release = useRef<(() => void) | null>(null);
   const [visible, setVisible] = useState(false);
+  const [ready, setReady] = useState(false); // 拿到请求名额，可以发请求了
+  const [mode, setMode] = useState<"image" | "video">("image");
   const [failed, setFailed] = useState(false);
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -24,10 +51,55 @@ function VideoThumb({ src }: { src: string }) {
     io.observe(el);
     return () => io.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    let alive = true;
+    void acquireThumb().then((rel) => {
+      if (!alive) return rel();
+      release.current = rel;
+      setReady(true);
+    });
+    return () => {
+      alive = false;
+      release.current?.();
+      release.current = null;
+    };
+  }, [visible]);
+
+  // 加载完（无论成功失败）就释放名额，让后面的缩略图跟上
+  const done = () => {
+    release.current?.();
+    release.current = null;
+  };
+
   if (failed) return <KindIcon kind="video" />;
   return (
     <span ref={ref} className="video-thumb">
-      {visible && <video src={`${src}#t=0.1`} preload="metadata" muted playsInline onError={() => setFailed(true)} />}
+      {ready &&
+        (mode === "image" ? (
+          <img
+            src={thumb}
+            alt=""
+            onLoad={done}
+            onError={() => {
+              done();
+              setMode("video"); // 服务端没有 ffmpeg 等情况，退回浏览器取首帧
+            }}
+          />
+        ) : (
+          <video
+            src={`${src}#t=0.1`}
+            preload="metadata"
+            muted
+            playsInline
+            onLoadedData={done}
+            onError={() => {
+              done();
+              setFailed(true);
+            }}
+          />
+        ))}
       <PlayBadge />
     </span>
   );
@@ -46,6 +118,13 @@ export function fmtSize(n: number) {
 }
 
 const fmtTime = (ms: number) => new Date(ms).toLocaleString();
+
+/** 字节/秒 → 8.4 MB/s */
+export function fmtSpeed(bytesPerSec: number) {
+  const mb = bytesPerSec / 1048576;
+  if (mb >= 1) return `${mb.toFixed(mb < 10 ? 1 : 0)} MB/s`;
+  return `${Math.max(1, Math.round(bytesPerSec / 1024))} KB/s`;
+}
 
 /** 把秒数格式化成 12:34 或 1:02:03，用于显示已转码到的位置 */
 export function fmtClock(sec: number) {
@@ -244,7 +323,7 @@ function Listing({ share, path, q, showHidden, go }: { share: Share; path: strin
                   {e.kind === "image" ? (
                     <img src={fileURL(share.id, e.path)} alt="" loading="lazy" />
                   ) : e.kind === "video" ? (
-                    <VideoThumb src={fileURL(share.id, e.path)} />
+                    <VideoThumb thumb={thumbURL(share.id, e.path)} src={fileURL(share.id, e.path)} />
                   ) : (
                     <KindIcon kind={e.kind} />
                   )}
@@ -488,6 +567,12 @@ function Preview({
   const timer = useRef<number | undefined>(undefined);
   const streaming = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  // 缓冲状态与下载速度（字节/秒）。片源是单个文件时按「已缓冲比例 × 文件大小」估算
+  const [buffering, setBuffering] = useState(true);
+  const [netSpeed, setNetSpeed] = useState(0);
+  const [bufferedPct, setBufferedPct] = useState(0);
+  const speedRef = useRef({ t: 0, bytes: 0, ema: 0 });
+  const mediaSize = useRef(entry.size);
   // 从 HLS 切到 mp4 时记下播放位置，切完接着播，不从头开始
   const resumeAt = useRef<{ time: number; playing: boolean } | null>(null);
   const idx = siblings.findIndex((s) => s.path === entry.path);
@@ -502,8 +587,13 @@ function Preview({
     setTranscode({ phase: "idle", percent: 0, readySec: 0, error: "" });
     streaming.current = false;
     resumeAt.current = null;
+    mediaSize.current = entry.size;
+    speedRef.current = { t: 0, bytes: 0, ema: 0 };
+    setBuffering(true);
+    setNetSpeed(0);
+    setBufferedPct(0);
     if (timer.current) window.clearInterval(timer.current);
-  }, [entry.path]);
+  }, [entry.path, entry.size]);
 
   useEffect(
     () => () => {
@@ -519,8 +609,42 @@ function Preview({
     }
   };
 
+  /**
+   * 估算下载速度：浏览器的 progress 事件只给「已缓冲到第几秒」，没有字节数，
+   * 所以用「已缓冲时长 ÷ 总时长 × 文件大小」换算。mp4 是顺序下载，误差不大。
+   */
+  const sampleBuffer = useCallback(() => {
+    const v = videoRef.current;
+    if (!v || !v.buffered.length) return;
+    const dur = v.duration;
+    if (!(dur > 0)) return;
+    const end = v.buffered.end(v.buffered.length - 1);
+    const ratio = Math.min(end / dur, 1);
+    setBufferedPct(Math.round(ratio * 100));
+
+    const size = mediaSize.current;
+    if (!size) return; // HLS 分片没有确定的总大小，只显示缓冲比例
+    const bytes = ratio * size;
+    const now = performance.now();
+    const s = speedRef.current;
+    if (s.t > 0 && now - s.t >= 300 && bytes > s.bytes) {
+      const inst = ((bytes - s.bytes) / (now - s.t)) * 1000;
+      s.ema = s.ema > 0 ? s.ema * 0.55 + inst * 0.45 : inst;
+      setNetSpeed(s.ema);
+    }
+    s.t = now;
+    s.bytes = bytes;
+  }, []);
+
+  // 缓冲期间每 500ms 采一次样；有数据到达（progress）时也采
+  useEffect(() => {
+    if (!buffering) return;
+    const id = window.setInterval(sampleBuffer, 500);
+    return () => window.clearInterval(id);
+  }, [buffering, sampleBuffer]);
+
   /** 转码已完成，切成合成好的 mp4：只有一个成品文件，进度条可以随意拖动 */
-  const finishTranscode = (id: string) => {
+  const finishTranscode = (id: string, bytes: number) => {
     stopPolling();
     setMediaError(null);
     // 边转边播用的是 HLS「直播」语义（时长还在增长、不能往前拖），
@@ -530,6 +654,8 @@ function Preview({
       resumeAt.current = { time: v.currentTime || 0, playing: !v.paused && !v.ended };
     }
     streaming.current = false;
+    mediaSize.current = bytes;
+    speedRef.current = { t: 0, bytes: 0, ema: 0 };
     setPlaySrc(transcodeURL(id));
     setTranscode({ phase: "done", percent: 100, readySec: 0, error: "" });
   };
@@ -537,6 +663,7 @@ function Preview({
   /** 首个分段已就绪，切到 HLS 边转边播 */
   const beginStream = (id: string, readySec: number) => {
     streaming.current = true;
+    mediaSize.current = 0; // 分片没有固定总大小
     setMediaError(null);
     setPlaySrc(hlsURL(id));
     setTranscode((t) => ({ ...t, phase: "streaming", readySec }));
@@ -552,7 +679,7 @@ function Preview({
         return;
       }
       // 缓存里已有成品，直接播完整文件
-      if (r.status === "done") return finishTranscode(r.id);
+      if (r.status === "done") return finishTranscode(r.id, r.bytes);
 
       const canStream = canPlayHLS();
       if (canStream && r.ready) beginStream(r.id, 0);
@@ -566,7 +693,7 @@ function Preview({
             return;
           }
           // 转码结束：不论之前是否在边转边播，都切成完整 mp4（可自由拖动）
-          if (st.status === "done") return finishTranscode(r.id);
+          if (st.status === "done") return finishTranscode(r.id, st.bytes);
           if (canStream && st.ready) {
             // 首个分段生成即可开播，转码在后面追着跑
             if (!streaming.current) beginStream(r.id, st.readySeconds);
@@ -645,36 +772,63 @@ function Preview({
             </div>
           ) : (
             <>
-              <video
-                ref={videoRef}
-                className="viewer-img"
-                src={playSrc || src}
-                controls
-                autoPlay
-                playsInline
-                preload="metadata"
-                onLoadedMetadata={(ev) => {
-                  // 换源后回到原来的位置，观看不中断
-                  const r = resumeAt.current;
-                  if (!r) return;
-                  resumeAt.current = null;
-                  const v = ev.currentTarget;
-                  const end = Number.isFinite(v.duration) ? v.duration : 0;
-                  if (r.time > 1 && (end === 0 || r.time < end - 1)) v.currentTime = r.time;
-                  if (r.playing) void v.play().catch(() => {});
-                }}
-                onError={(e) => {
-                  const err = e.currentTarget.error;
-                  setMediaError({ code: err?.code ?? -1, message: err?.message ?? "" });
-                  // 原始文件失败时才查编码；转码文件失败说明转换没解决问题
-                  if (!playSrc) {
-                    api.codec(share.id, entry.path).then(
-                      (d) => setCodec(d.codec),
-                      () => {},
-                    );
-                  }
-                }}
-              />
+              <div className="viewer-media">
+                <video
+                  ref={videoRef}
+                  className="viewer-img"
+                  src={playSrc || src}
+                  controls
+                  autoPlay
+                  playsInline
+                  preload="metadata"
+                  onLoadStart={() => {
+                    speedRef.current = { t: 0, bytes: 0, ema: 0 };
+                    setNetSpeed(0);
+                    setBufferedPct(0);
+                    setBuffering(true);
+                  }}
+                  onProgress={sampleBuffer}
+                  onWaiting={() => setBuffering(true)}
+                  onStalled={() => setBuffering(true)}
+                  onPlaying={() => {
+                    setBuffering(false);
+                    setNetSpeed(0);
+                  }}
+                  onCanPlay={(ev) => {
+                    // 自动播放被拦截时不会触发 playing，这里也收起浮层
+                    if (ev.currentTarget.readyState >= 3) setBuffering(false);
+                  }}
+                  onLoadedMetadata={(ev) => {
+                    sampleBuffer();
+                    // 换源后回到原来的位置，观看不中断
+                    const r = resumeAt.current;
+                    if (!r) return;
+                    resumeAt.current = null;
+                    const v = ev.currentTarget;
+                    const end = Number.isFinite(v.duration) ? v.duration : 0;
+                    if (r.time > 1 && (end === 0 || r.time < end - 1)) v.currentTime = r.time;
+                    if (r.playing) void v.play().catch(() => {});
+                  }}
+                  onError={(e) => {
+                    const err = e.currentTarget.error;
+                    setMediaError({ code: err?.code ?? -1, message: err?.message ?? "" });
+                    // 原始文件失败时才查编码；转码文件失败说明转换没解决问题
+                    if (!playSrc) {
+                      api.codec(share.id, entry.path).then(
+                        (d) => setCodec(d.codec),
+                        () => {},
+                      );
+                    }
+                  }}
+                />
+                {buffering && !mediaError && (
+                  <div className="video-buffer">
+                    <span className="video-buffer-ring" aria-hidden="true" />
+                    <span>{netSpeed > 0 ? `缓冲中 · ${fmtSpeed(netSpeed)}` : "正在加载…"}</span>
+                    {bufferedPct > 0 && <span className="video-buffer-pct">已缓冲 {bufferedPct}%</span>}
+                  </div>
+                )}
+              </div>
               {transcode.phase === "streaming" && (
                 <div className="transcode-bar">
                   <span>正在转换 {transcode.percent}%</span>

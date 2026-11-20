@@ -109,6 +109,9 @@ export const fileURL = (share: number, path: string, download = false) =>
 /** 转码后的视频地址，支持 Range 可拖动进度条 */
 export const transcodeURL = (id: string) => `/api/fs/transcode/${id}/file`;
 
+/** 视频缩略图（服务端抽帧成的小图），列表里用它代替 <video> 预加载 */
+export const thumbURL = (share: number, path: string) => `/api/fs/thumb?${qs({ share, path })}`;
+
 /** 边转边播用的 HLS 播放列表地址，Safari 可直接播放 */
 export const hlsURL = (id: string) => `/api/fs/transcode/${id}/hls/index.m3u8`;
 
@@ -123,6 +126,8 @@ export type TranscodeStatus = {
   duration: number;
   /** 已经转码到的位置（秒） */
   readySeconds: number;
+  /** 成品字节数，前端用「已缓冲比例 × 大小」估算下载速度 */
+  bytes: number;
 };
 
 export type MediaCacheItem = {
@@ -168,7 +173,10 @@ export const api = {
   codec: (share: number, path: string) => request<{ codec: string }>("GET", `/fs/codec?${qs({ share, path })}`),
   /** 请求把视频转成 H.264；同一文件只会转一次，已转过时直接返回 done */
   transcode: (share: number, path: string) =>
-    request<{ id: string; status: string; ready: boolean }>("POST", `/fs/transcode?${qs({ share, path })}`),
+    request<{ id: string; status: string; ready: boolean; bytes: number }>(
+      "POST",
+      `/fs/transcode?${qs({ share, path })}`,
+    ),
   transcodeStatus: (id: string) => request<TranscodeStatus>("GET", `/fs/transcode/${id}`),
   mediaList: () => request<{ entries: MediaCacheItem[]; used: number; limit: number }>("GET", "/fs/media"),
   deleteMedia: (id: string) => request<void>("DELETE", `/fs/media/${id}`),

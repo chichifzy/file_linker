@@ -96,6 +96,15 @@ func mediaEntryFile(id, name string) string {
 	return filepath.Join(mediaRoot, id, name)
 }
 
+// mediaPlaySize 是当前实际播放的那个文件的大小，前端用「已缓冲比例 × 大小」估算下载速度。
+// 转码完成时 e.Bytes 还包含尚未清理的 HLS 分段（接近成品两倍），所以这里单独取 mp4。
+func mediaPlaySize(id string) int64 {
+	if fi, err := os.Stat(mediaEntryFile(id, mediaMP4Name)); err == nil {
+		return fi.Size()
+	}
+	return 0
+}
+
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
@@ -394,9 +403,15 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 		// 失败过的任务允许重试
 		if e.Status != "error" {
 			status := e.Status
+			bytes := e.Bytes
+			if status == "done" {
+				if sz := mediaPlaySize(id); sz > 0 {
+					bytes = sz
+				}
+			}
 			mediaMu.Unlock()
 			writeJSON(w, http.StatusOK, map[string]any{
-				"id": id, "status": status, "ready": e.isReady(),
+				"id": id, "status": status, "ready": e.isReady(), "bytes": bytes,
 			})
 			return
 		}
@@ -462,7 +477,7 @@ func (s *Server) createTranscode(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": id, "status": "running", "ready": false,
+		"id": id, "status": "running", "ready": false, "bytes": 0,
 	})
 }
 
@@ -621,8 +636,13 @@ func (s *Server) transcodeStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "转码任务不存在或已被清除")
 		return
 	}
-	status, msg, dur := e.Status, e.Err, e.Duration
+	status, msg, dur, bytes := e.Status, e.Err, e.Duration, e.Bytes
 	mediaMu.Unlock()
+	if status == "done" {
+		if sz := mediaPlaySize(id); sz > 0 {
+			bytes = sz
+		}
+	}
 
 	if status == "running" && !e.isReady() {
 		// 顺手探测首个分段，省掉一个后台轮询协程
@@ -634,6 +654,7 @@ func (s *Server) transcodeStatus(w http.ResponseWriter, r *http.Request) {
 		"percent":      e.percent.Load(),
 		"ready":        e.isReady(),
 		"duration":     dur,
+		"bytes":        bytes,
 		"readySeconds": e.readySec.Load(),
 	})
 }

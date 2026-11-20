@@ -33,6 +33,9 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("GET /api/shares", s.requireUser(s.listShares))
 	m.Handle("GET /api/fs/list", s.requireUser(s.listDir))
 	m.Handle("GET /api/fs/file", s.requireUser(s.serveFile))
+	// 列表里的视频缩略图：服务端抽帧成小图并缓存，避免几十个 <video> 抢连接
+	initThumbs()
+	m.Handle("GET /api/fs/thumb", s.requireUser(s.serveThumb))
 	m.Handle("GET /api/fs/codec", s.requireUser(s.fileCodec))
 	m.Handle("GET /api/fs/search", s.requireUser(s.search))
 	m.Handle("GET /api/fs/dirinfo", s.requireUser(s.dirInfo))
@@ -128,5 +131,5 @@ func logRequests(next http.Handler) http.Handler {
 
 // quietPath 标记高频的媒体请求，成功时不写日志。
 func quietPath(p string) bool {
-	return p == "/api/fs/file" || strings.HasPrefix(p, "/api/fs/transcode/")
+	return p == "/api/fs/file" || p == "/api/fs/thumb" || strings.HasPrefix(p, "/api/fs/transcode/")
 }
