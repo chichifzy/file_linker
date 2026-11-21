@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
-import { api, errMsg, fileURL, hlsURL, thumbURL, transcodeURL, zipURL, type DirInfo, type Entry, type MediaInfo, type Share } from "../api";
+import { api, ApiError, errMsg, fileURL, hlsURL, thumbURL, transcodeURL, zipURL, type DirInfo, type Entry, type MediaInfo, type Share } from "../api";
 import { useMe } from "../auth";
 import { useConfirm } from "../components/Confirm";
 import Modal, { type ModalHandle } from "../components/Modal";
 import { ArchiveIcon, KindIcon, PlayBadge } from "../components/FileIcons";
 import { DownloadModal, ExtractModal, NewFolderModal, RenameModal } from "../components/CreateModals";
 import ItemMenu from "../components/ItemMenu";
+import { setClip, useClip } from "../clipboard";
 import { fmtSize } from "../format";
 
 // 缓存页也在用，保持原来的导出位置
@@ -247,18 +248,31 @@ function Toolbar({
   const [input, setInput] = useState(q);
   const [menuOpen, setMenuOpen] = useState(false);
   const [modal, setModal] = useState<"folder" | "download" | null>(null);
+  const [pasteMenu, setPasteMenu] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [pasteError, setPasteError] = useState("");
   const addRef = useRef<HTMLDivElement>(null);
+  const pasteRef = useRef<HTMLDivElement>(null);
+  const clip = useClip();
+  const confirm = useConfirm();
   const parts = path ? path.split("/") : [];
   const dir = path ? `${share.name}/${path}` : share.name;
+  // 跨共享目录粘贴时，提示里带上源来自哪个共享目录，免得看名字想不起来
+  const clipFrom = clip && (clip.share === share.id ? clip.name : `${clip.shareName}/${clip.path}`);
 
   // 点菜单外面或按 Esc 收起
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !pasteMenu) return;
     const onDown = (e: MouseEvent) => {
-      if (!addRef.current?.contains(e.target as Node)) setMenuOpen(false);
+      const t = e.target as Node;
+      if (menuOpen && !addRef.current?.contains(t)) setMenuOpen(false);
+      if (pasteMenu && !pasteRef.current?.contains(t)) setPasteMenu(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        setPasteMenu(false);
+      }
     };
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -266,7 +280,57 @@ function Toolbar({
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [menuOpen]);
+  }, [menuOpen, pasteMenu]);
+
+  const paste = async () => {
+    if (!clip || pasting) return;
+    setPasteError("");
+    setPasting(true);
+    try {
+      // 重名时先问一次：取消只结束本次粘贴，剪贴板保持原样；继续则让服务端改名
+      let rename = false;
+      for (;;) {
+        try {
+          const r = await api.paste(share.id, path, clip.share, clip.path, clip.mode, rename);
+          // 剪切是一次性的，粘完就忘掉；拷贝可以接着粘到别处
+          if (clip.mode === "move") setClip(null);
+          onChanged(
+            r.sameDir
+              ? `「${r.name}」已经在${dir}里了`
+              : clip.mode === "move"
+                ? `已把「${r.name}」移动到${dir}`
+                : `已把「${r.name}」拷贝到${dir}`,
+          );
+          break;
+        } catch (e) {
+          if (!(e instanceof ApiError && e.code === "name_conflict")) throw e;
+          const oldName = String(e.data?.name ?? clip.name);
+          const proposed = String(e.data?.proposed ?? "");
+          const goOn = await confirm({
+            title: "当前文件夹已有同名项目",
+            message: (
+              <>
+                这里已经有「{oldName}」了。
+                {proposed && (
+                  <>
+                    <br />
+                    继续粘贴会保存为「<b className="paste-conflict-name">{proposed}</b>」。
+                  </>
+                )}
+              </>
+            ),
+            confirmText: "继续粘贴",
+          });
+          if (!goOn) break; // 取消本次粘贴，记住的项目和粘贴按钮都留着
+          rename = true;
+        }
+      }
+    } catch (e) {
+      setPasteError(errMsg(e));
+    } finally {
+      setPasting(false);
+    }
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -288,46 +352,93 @@ function Toolbar({
             </span>
           ))}
         </nav>
-        {canWrite && (
-          <div className="add-wrap" ref={addRef}>
-            <button
-              type="button"
-              className="add-btn"
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              aria-label="新建"
-              title="新建文件夹 / 下载文件"
-              onClick={() => setMenuOpen((v) => !v)}
-            >
-              +
-            </button>
-            {menuOpen && (
-              <div className="add-menu" role="menu">
+        <div className="head-actions">
+          {canWrite && clip && (
+            <div className="paste-wrap" ref={pasteRef}>
+              <div className="paste-group">
                 <button
                   type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setModal("folder");
-                  }}
+                  className="paste-btn"
+                  disabled={pasting}
+                  title={`把${clip.mode === "copy" ? "拷贝" : "剪切"}的「${clipFrom}」${clip.isDir ? "文件夹" : ""}粘贴到${dir}`}
+                  onClick={paste}
                 >
-                  新建文件夹
+                  {pasting ? "粘贴中…" : "粘贴"}
+                  <span className="paste-name">{clip.name}</span>
                 </button>
                 <button
                   type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setModal("download");
-                  }}
+                  className="paste-more"
+                  aria-haspopup="menu"
+                  aria-expanded={pasteMenu}
+                  aria-label="粘贴选项"
+                  title="粘贴选项"
+                  onClick={() => setPasteMenu((v) => !v)}
                 >
-                  下载文件
+                  ▾
                 </button>
               </div>
-            )}
-          </div>
-        )}
+              {pasteMenu && (
+                <div className="paste-menu" role="menu">
+                  <p className="paste-from">
+                    {clip.mode === "copy" ? "已拷贝" : "已剪切"}：{clipFrom}
+                  </p>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPasteMenu(false);
+                      setClip(null);
+                    }}
+                  >
+                    取消选择
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {canWrite && (
+            <div className="add-wrap" ref={addRef}>
+              <button
+                type="button"
+                className="add-btn"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                aria-label="新建"
+                title="新建文件夹 / 下载文件"
+                onClick={() => setMenuOpen((v) => !v)}
+              >
+                +
+              </button>
+              {menuOpen && (
+                <div className="add-menu" role="menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setModal("folder");
+                    }}
+                  >
+                    新建文件夹
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setModal("download");
+                    }}
+                  >
+                    下载文件
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
+      {pasteError && <p className="error">{pasteError}</p>}
       <div className="filters quick-links">
         <button className={path === "" && !q ? "on" : undefined} onClick={() => go({ path: "", q: "" })}>
           ⤒ 顶层目录
@@ -548,6 +659,32 @@ function Listing({
           anchor={menu.anchor}
           trashName={trashName}
           onClose={() => setMenu(null)}
+          onCopy={() => {
+            const target = menu.entry;
+            setMenu(null);
+            setClip({
+              share: share.id,
+              shareName: share.name,
+              path: target.path,
+              name: target.name,
+              isDir: target.isDir,
+              mode: "copy",
+            });
+            onChanged(`已拷贝「${target.name}」，到目标文件夹点「粘贴」`);
+          }}
+          onCut={() => {
+            const target = menu.entry;
+            setMenu(null);
+            setClip({
+              share: share.id,
+              shareName: share.name,
+              path: target.path,
+              name: target.name,
+              isDir: target.isDir,
+              mode: "move",
+            });
+            onChanged(`已剪切「${target.name}」，到目标文件夹点「粘贴」`);
+          }}
           onRename={() => {
             setRename(menu.entry);
             setMenu(null);

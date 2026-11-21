@@ -46,6 +46,8 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	// 重命名、删除（删除是移到系统回收站 / 废纸篓）
 	m.Handle("POST /api/fs/rename", s.requireAdmin(s.renameEntry))
 	m.Handle("POST /api/fs/delete", s.requireAdmin(s.deleteEntry))
+	// 粘贴：把之前拷贝 / 剪切的那一项复制或移动到当前目录
+	m.Handle("POST /api/fs/paste", s.requireAdmin(s.pasteEntry))
 	// 解压 zip / 7z 到压缩包所在的当前目录
 	initExtract()
 	m.Handle("POST /api/fs/extract", s.requireAdmin(s.createExtract))

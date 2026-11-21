@@ -26,33 +26,7 @@ func (s *Server) resolveItem(r *http.Request) (root, full, rel string, err error
 	if err != nil {
 		return
 	}
-	rel = strings.TrimPrefix(path.Clean("/"+strings.ReplaceAll(q.Get("path"), "\\", "/")), "/")
-	if rel == "" {
-		err = errStatus(http.StatusBadRequest, "不能对共享目录的根目录执行该操作")
-		return
-	}
-	full = filepath.Join(root, filepath.FromSlash(rel))
-	if !within(root, full) {
-		err = errStatus(http.StatusForbidden, "不能访问共享目录以外的文件")
-		return
-	}
-	parent, perr := filepath.EvalSymlinks(filepath.Dir(full))
-	if perr != nil {
-		err = errStatus(http.StatusNotFound, "文件不存在")
-		return
-	}
-	if !within(root, parent) {
-		err = errStatus(http.StatusForbidden, "不能访问共享目录以外的文件")
-		return
-	}
-	if _, lerr := os.Lstat(full); lerr != nil {
-		if errors.Is(lerr, os.ErrPermission) {
-			err = errStatus(http.StatusForbidden, "没有权限访问该文件")
-		} else {
-			err = errStatus(http.StatusNotFound, "文件不存在")
-		}
-		return
-	}
+	full, rel, err = resolveItemAt(root, q.Get("path"))
 	return
 }
 

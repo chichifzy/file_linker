@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 const WIDTH = 148;
 const ITEM = 34; // 每项高度，只用来判断要不要往上翻
+const SEP = 9; // 分组细线 + 上下留白
 const PADDING = 12;
 const GAP = 6;
 const EDGE = 8;
@@ -14,6 +15,8 @@ const EDGE = 8;
 export default function ItemMenu({
   anchor,
   onClose,
+  onCopy,
+  onCut,
   onRename,
   onExtract,
   onDelete,
@@ -21,6 +24,9 @@ export default function ItemMenu({
 }: {
   anchor: HTMLElement;
   onClose: () => void;
+  /** 记住这一项，等会儿到目标文件夹粘贴（复制 / 移动） */
+  onCopy: () => void;
+  onCut: () => void;
   onRename: () => void;
   /** 压缩包才有：解压到当前文件夹 */
   onExtract?: () => void;
@@ -30,7 +36,9 @@ export default function ItemMenu({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  const height = PADDING + ITEM * (onExtract ? 3 : 2);
+  // 分三组：拷贝/剪切 · 重命名/解压 · 删除
+  const items = 2 + 1 + (onExtract ? 1 : 0) + 1;
+  const height = PADDING + ITEM * items + SEP * 2;
 
   useLayoutEffect(() => {
     const r = anchor.getBoundingClientRect();
@@ -75,6 +83,13 @@ export default function ItemMenu({
         visibility: pos ? "visible" : "hidden",
       }}
     >
+      <button type="button" role="menuitem" onClick={onCopy}>
+        拷贝
+      </button>
+      <button type="button" role="menuitem" onClick={onCut}>
+        剪切
+      </button>
+      <div className="menu-sep" role="separator" />
       <button type="button" role="menuitem" onClick={onRename}>
         重命名
       </button>
@@ -83,6 +98,7 @@ export default function ItemMenu({
           解压
         </button>
       )}
+      <div className="menu-sep" role="separator" />
       <button type="button" role="menuitem" className="danger-text" onClick={onDelete}>
         {/* 跟系统自己的叫法一致：macOS 的右键菜单就是「移到废纸篓」 */}
         {trashName === "废纸篓" ? "移到废纸篓" : "删除"}

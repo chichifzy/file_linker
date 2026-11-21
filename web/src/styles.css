@@ -308,6 +308,46 @@ button.file-more:hover:not(:disabled), button.file-more[aria-expanded="true"] {
 .row-menu button:hover:not(:disabled) { background: var(--primary-softer); color: var(--primary-active); }
 .row-menu button.danger-text { color: var(--danger); }
 .row-menu button.danger-text:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+/* 分组细线：拷贝/剪切 · 重命名/解压 · 删除 */
+.row-menu .menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+
+/* 面包屑右侧的动作组：粘贴 + 新建。粘贴做成「主按钮 + ▾」的连体按钮，
+   和「+」同高同圆角，避免两个圆按钮并排显得散 */
+.head-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.paste-wrap { position: relative; }
+.paste-group {
+  display: flex; align-items: stretch; height: 34px; overflow: hidden;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px;
+}
+button.paste-btn, button.paste-more {
+  display: flex; align-items: center; gap: 6px; height: 100%;
+  padding: 0 11px; background: none; border: none; border-radius: 0;
+  color: var(--text); font-size: 13.5px; font-weight: 500;
+}
+button.paste-more { padding: 0 8px; border-left: 1px solid var(--border); color: var(--text-3); font-size: 11px; }
+button.paste-btn:hover:not(:disabled), button.paste-more:hover:not(:disabled) { background: var(--primary-softer); color: var(--primary-active); }
+/* 按钮上带一小段被记住的文件名，太长就省略；窄屏由下面的媒体查询隐藏 */
+.paste-name {
+  max-width: 108px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; font-weight: 400; color: var(--text-3);
+}
+.paste-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 172px;
+  display: flex; flex-direction: column; padding: 6px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow-lg);
+}
+.paste-from {
+  margin: 0; padding: 4px 10px 7px; border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-3);
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.paste-menu button {
+  background: none; color: var(--text); text-align: left; font-weight: 500;
+  padding: 8px 10px; border-radius: 6px;
+}
+.paste-menu button:hover:not(:disabled) { background: var(--primary-softer); color: var(--primary-active); }
+.paste-conflict-name { color: var(--primary-active); font-weight: 600; }
 dialog.modal.dir-info { width: min(440px, calc(100vw - 32px)); }
 .info-list { display: grid; grid-template-columns: auto 1fr; gap: 10px 16px; margin: 0; font-size: 14px; }
 .info-list dt { color: var(--text-2); }
@@ -333,6 +373,9 @@ button.dir-item:hover:not(:disabled) { background: var(--primary-softer); }
   button.file-row { grid-template-columns: 40px minmax(0, 1fr) auto; gap: 10px; padding: 8px 10px; }
   .file-time { display: none; }
   button.dir-info-btn { right: calc(10px + var(--row-actions)); }
+  /* 窄屏面包屑本来就长，粘贴按钮只留文字，名字交给下拉里的说明 */
+  .paste-name { display: none; }
+  .head-actions { gap: 6px; }
 }
 
 /* 页面标题行：左侧标题，右侧主操作按钮 */

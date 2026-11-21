@@ -49,8 +49,10 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
-    /** 业务错误码，如 need_password / wrong_password */
+    /** 业务错误码，如 need_password / wrong_password / name_conflict */
     public code = "",
+    /** 后端附带的额外字段（例如重名冲突时建议的新文件名） */
+    public data: Record<string, unknown> | undefined = undefined,
   ) {
     super(message);
   }
@@ -139,7 +141,7 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
   });
   if (!res.ok) {
     const data = await res.json().catch(() => null);
-    throw new ApiError(res.status, data?.error ?? `请求失败（${res.status}）`, data?.code ?? "");
+    throw new ApiError(res.status, data?.error ?? `请求失败（${res.status}）`, data?.code ?? "", data ?? undefined);
   }
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -269,6 +271,16 @@ export const api = {
   /** 删除（仅管理员）：移到系统回收站 / 废纸篓，返回一句说明去了哪里 */
   remove: (share: number, path: string) =>
     request<{ where: string }>("POST", `/fs/delete?${qs({ share, path })}`),
+  /** 粘贴（仅管理员）：把 srcPath 复制或移动到当前目录。
+   *  重名时返回 code=name_conflict 和 data.proposed，让用户决定取消还是继续；
+   *  rename=true 表示用户选了继续，此时由服务端加 (1)、(2) 后缀。
+   *  sameDir 表示剪切到原目录，什么也没做 */
+  paste: (share: number, path: string, srcShare: number, srcPath: string, mode: "copy" | "move", rename = false) =>
+    request<{ name: string; path: string; mode: string; sameDir?: boolean }>(
+      "POST",
+      `/fs/paste?${qs({ share, path })}`,
+      { srcShare, srcPath, mode, rename },
+    ),
   /** 解压 zip / 7z 到压缩包所在的目录（仅管理员），立即返回任务 id。
    *  压缩包有密码时会返回 code=need_password / wrong_password，前端据此弹密码框 */
   startExtract: (share: number, path: string, password: string) =>
