@@ -228,7 +228,7 @@ button.link:hover:not(:disabled) { background: none; color: var(--primary-active
 .browser-head { display: flex; flex-direction: column; gap: 10px; margin: 20px 0 14px; }
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; font-size: 15px; overflow-wrap: anywhere; }
 .crumbs button.link { padding: 0; min-height: 0; font-weight: 500; }
-/* 面包屑右侧的「+」：新建文件夹 / 下载文件（仅管理员可见） */
+/* 面包屑右侧的「+」：新建文件夹 / 上传 / 创建下载任务（仅管理员可见） */
 .crumbs-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .crumbs-row .crumbs { flex: 1; min-width: 0; }
 .add-wrap { position: relative; flex: none; }
@@ -247,6 +247,57 @@ button.add-btn {
   padding: 8px 10px; border-radius: 6px;
 }
 .add-menu button:hover:not(:disabled) { background: var(--primary-softer); color: var(--primary-active); }
+/* 上传弹窗：拖拽区 + 文件列表 */
+.up-body { gap: 8px; }
+.up-drop {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 8px 12px; text-align: center;
+  border: 1.5px dashed var(--border); border-radius: 14px;
+  background: var(--primary-softer);
+}
+/* iOS Safari 对 hidden 的 file input 有时不派发 change，用透明覆盖层更稳 */
+.up-file-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.up-drop.dragging { border-color: var(--primary); background: var(--primary-softer); }
+.up-drop-icon {
+  width: 38px; height: 38px; border-radius: 12px;
+  display: grid; place-items: center;
+  background: var(--surface); color: var(--primary-active);
+  font-size: 20px; font-weight: 700; box-shadow: var(--shadow);
+}
+.up-drop strong { font-size: 14px; }
+.up-drop small { color: var(--text-3); line-height: 1.5; }
+.up-list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: 180px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.up-list li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+.up-list li:last-child { border-bottom: none; }
+.up-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.up-list small { color: var(--text-3); flex: none; }
+.up-remove {
+  flex: none; width: 24px; height: 24px; padding: 0; border-radius: 6px;
+  background: none; color: var(--text-3); font-size: 17px; line-height: 1;
+}
+.up-remove:hover { background: var(--danger-soft); color: var(--danger); }
+.up-total, .up-summary { margin: 0; font-size: 13px; }
+.up-progress-list li { display: block; }
+.up-row { display: flex; align-items: center; gap: 8px; }
+.up-bar { height: 5px; margin-top: 7px; border-radius: 99px; background: var(--primary-softer); overflow: hidden; }
+.up-bar span { display: block; height: 100%; background: var(--primary); transition: width 0.15s ease; }
+.up-conflict {
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  background: var(--surface);
+}
+.up-conflict > p { margin: 0 0 6px; line-height: 1.6; }
+.up-conflict-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.up-conflict-list { margin: 0; padding-left: 20px; line-height: 1.8; overflow-wrap: anywhere; }
+.up-conflict-name { color: var(--primary-active); }
+/* 文件多时弹窗内部滚动，按钮始终留在底部可见 */
 /* 下载弹窗 */
 .dl-form { display: flex; flex-direction: column; gap: 12px; }
 .dl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }

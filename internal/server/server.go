@@ -41,8 +41,11 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("GET /api/fs/codec", s.requireUser(s.fileCodec))
 	m.Handle("GET /api/fs/search", s.requireUser(s.search))
 	m.Handle("GET /api/fs/dirinfo", s.requireUser(s.dirInfo))
-	// 写入共享目录（仅管理员）：新建文件夹、把链接指向的文件下载到当前目录
+	// 写入共享目录（仅管理员）：新建文件夹、把链接指向的文件下载到当前目录、上传本机的文件
 	m.Handle("POST /api/fs/mkdir", s.requireAdmin(s.createDir))
+	// 上传前预检重名，真正上传时流式接收原始请求体
+	m.Handle("POST /api/fs/upload/check", s.requireAdmin(s.checkUpload))
+	m.Handle("POST /api/fs/upload", s.requireAdmin(s.uploadFile))
 	// 重命名、删除（删除是移到系统回收站 / 废纸篓）
 	m.Handle("POST /api/fs/rename", s.requireAdmin(s.renameEntry))
 	m.Handle("POST /api/fs/delete", s.requireAdmin(s.deleteEntry))

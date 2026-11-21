@@ -265,6 +265,69 @@ export const api = {
   /** 在共享目录的 path 下新建文件夹（仅管理员） */
   mkdir: (share: number, path: string, name: string) =>
     request<{ name: string; path: string }>("POST", `/fs/mkdir?${qs({ share, path })}`, { name }),
+  /** 上传前预检重名（仅管理员）。返回当前已经存在的名字和建议的新名字 */
+  checkUpload: (share: number, path: string, names: string[]) =>
+    request<{ conflicts: { name: string; proposed: string }[] }>(
+      "POST",
+      `/fs/upload/check?${qs({ share, path })}`,
+      { names },
+    ),
+  /** 上传一个文件到当前目录（仅管理员）。用 XHR 才能拿到真实的上传进度 */
+  uploadFile: (
+    share: number,
+    path: string,
+    file: File,
+    rename: boolean,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ) =>
+    new Promise<{ name: string; path: string; size: number }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/fs/upload?${qs({ share, path, name: file.name, rename: rename ? 1 : 0 })}`);
+      // 跨站表单发不出自定义头，和 SameSite Cookie 一起防 CSRF
+      xhr.setRequestHeader("X-File-Linker-Upload", "1");
+      if (onProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress(e.loaded, e.total);
+        };
+      }
+      const onAbort = () => xhr.abort();
+      if (signal) {
+        if (signal.aborted) return reject(new DOMException("已取消", "AbortError"));
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      xhr.onerror = () => {
+        cleanup();
+        reject(new Error("网络错误，上传失败"));
+      };
+      xhr.onabort = () => {
+        cleanup();
+        reject(new DOMException("已取消", "AbortError"));
+      };
+      xhr.onload = () => {
+        cleanup();
+        let data: Record<string, unknown> | undefined;
+        try {
+          data = JSON.parse(xhr.responseText);
+        } catch {
+          // 后端没返回 JSON 时也按普通错误处理
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data as { name: string; path: string; size: number });
+        } else {
+          reject(
+            new ApiError(
+              xhr.status,
+              (data?.error as string) ?? `上传失败（${xhr.status}）`,
+              (data?.code as string) ?? "",
+              data,
+            ),
+          );
+        }
+      };
+      xhr.send(file);
+    }),
   /** 重命名（仅管理员），name 是完整的新文件名，可以改扩展名 */
   rename: (share: number, path: string, name: string) =>
     request<{ name: string; path: string }>("POST", `/fs/rename?${qs({ share, path })}`, { name }),

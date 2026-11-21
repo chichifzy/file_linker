@@ -5,7 +5,7 @@ import { useMe } from "../auth";
 import { useConfirm } from "../components/Confirm";
 import Modal, { type ModalHandle } from "../components/Modal";
 import { ArchiveIcon, KindIcon, PlayBadge } from "../components/FileIcons";
-import { DownloadModal, ExtractModal, NewFolderModal, RenameModal } from "../components/CreateModals";
+import { DownloadModal, ExtractModal, NewFolderModal, RenameModal, UploadModal } from "../components/CreateModals";
 import ItemMenu from "../components/ItemMenu";
 import { setClip, useClip } from "../clipboard";
 import { fmtSize } from "../format";
@@ -240,14 +240,14 @@ function Toolbar({
   q: string;
   showHidden: boolean;
   onHidden: (v: boolean) => void;
-  /** 管理员可以在当前目录新建文件夹、按链接下载文件 */
+  /** 管理员可以在当前目录新建文件夹、上传文件、按链接创建下载任务 */
   canWrite: boolean;
   onChanged: (msg: string) => void;
   go: Go;
 }) {
   const [input, setInput] = useState(q);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [modal, setModal] = useState<"folder" | "download" | null>(null);
+  const [modal, setModal] = useState<"folder" | "upload" | "download" | null>(null);
   const [pasteMenu, setPasteMenu] = useState(false);
   const [pasting, setPasting] = useState(false);
   const [pasteError, setPasteError] = useState("");
@@ -405,7 +405,7 @@ function Toolbar({
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
                 aria-label="新建"
-                title="新建文件夹 / 下载文件"
+                title="新建文件夹 / 上传 / 创建下载任务"
                 onClick={() => setMenuOpen((v) => !v)}
               >
                 +
@@ -427,10 +427,20 @@ function Toolbar({
                     role="menuitem"
                     onClick={() => {
                       setMenuOpen(false);
+                      setModal("upload");
+                    }}
+                  >
+                    上传文件
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
                       setModal("download");
                     }}
                   >
-                    下载文件
+                    创建下载任务
                   </button>
                 </div>
               )}
@@ -478,6 +488,15 @@ function Toolbar({
             setModal(null);
             onChanged(`已创建文件夹「${name}」`);
           }}
+        />
+      )}
+      {modal === "upload" && (
+        <UploadModal
+          shareId={share.id}
+          path={path}
+          dir={dir}
+          onClose={() => setModal(null)}
+          onUploaded={() => onChanged("文件上传完成")}
         />
       )}
       {modal === "download" && (

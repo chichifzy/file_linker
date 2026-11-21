@@ -595,3 +595,320 @@ export function ExtractModal({
     </Modal>
   );
 }
+
+type UpItem = {
+  file: File;
+  status: "waiting" | "uploading" | "done" | "error";
+  /** 已上传字节数（不是百分比） */
+  loaded: number;
+  /** 指数平均后的瞬时速度，字节/秒 */
+  speed: number;
+  error?: string;
+  savedName?: string;
+};
+
+/** 上传本机文件到当前目录。多选和拖拽都支持；手机上点「选择文件」调起系统文件选择器。 */
+export function UploadModal({
+  shareId,
+  path,
+  dir,
+  onClose,
+  onUploaded,
+}: Base & { onClose: () => void; onUploaded: () => void }) {
+  const ref = useRef<ModalHandle>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [items, setItems] = useState<UpItem[]>([]);
+  const [conflicts, setConflicts] = useState<{ name: string; proposed: string }[] | null>(null);
+  const [phase, setPhase] = useState<"pick" | "running" | "done">("pick");
+  const [dragging, setDragging] = useState(false);
+  const [error, setError] = useState("");
+  const [uploaded, setUploaded] = useState(0);
+  const controller = useRef<AbortController | null>(null);
+  const alive = useRef(true);
+  // 每个文件的上一次进度采样，用来估算上传速度
+  const samples = useRef<{ t: number; bytes: number }[]>([]);
+
+  useEffect(
+    () => () => {
+      alive.current = false;
+      controller.current?.abort();
+    },
+    [],
+  );
+
+  // Modal 自己的 × / Esc / 点遮罩关闭后只会调 finishClose；
+  // 我们自己的按钮则先请 Modal 播动画，动画结束再走 finishClose。
+  // 不能在 finishClose 里再调一次 Modal.close：那会被它的防重入标志吞掉，弹窗就关不掉了。
+  const finishClose = () => {
+    controller.current?.abort();
+    onClose();
+  };
+  const requestClose = () => (ref.current ? ref.current.close(finishClose) : finishClose());
+
+  const addFiles = (files: FileList | File[]) => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    setError("");
+    setConflicts(null);
+    setPhase("pick");
+    setItems((prev) => [
+      ...prev,
+      ...list.map((file) => ({ file, status: "waiting" as const, loaded: 0, speed: 0 })),
+    ]);
+  };
+
+  const patch = (i: number, change: Partial<UpItem>) =>
+    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...change } : it)));
+
+  // 真正开始传。rename 由冲突面板决定；不再用嵌套 confirm 弹窗（iOS 上会卡住）
+  const runUpload = async (rename: boolean) => {
+    setConflicts(null);
+    setError("");
+    setPhase("running");
+    const ctrl = new AbortController();
+    controller.current = ctrl;
+    let done = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (ctrl.signal.aborted || !alive.current) break;
+      const item = items[i];
+      samples.current[i] = { t: 0, bytes: 0 };
+      patch(i, { status: "uploading", loaded: 0, speed: 0 });
+      try {
+        let result: { name: string };
+        try {
+          result = await api.uploadFile(
+            shareId,
+            path,
+            item.file,
+            rename,
+            (loaded) => {
+              if (!alive.current) return;
+              const now = performance.now();
+              const prev = samples.current[i];
+              setItems((list) => {
+                const cur = list[i];
+                if (!cur) return list;
+                let speed = cur.speed;
+                // 两次进度事件可能落在同一毫秒内（本地传小文件时很常见），
+                // 间隔为 0 会除出 Infinity，必须要求至少过了 1 毫秒
+                if (prev && prev.t > 0 && loaded > prev.bytes && now > prev.t) {
+                  const inst = ((loaded - prev.bytes) / (now - prev.t)) * 1000;
+                  // 波动大时用指数平均压一压，和下载任务一个口径
+                  if (Number.isFinite(inst)) {
+                    speed = speed > 0 ? speed * 0.6 + inst * 0.4 : inst;
+                  }
+                }
+                const next = [...list];
+                next[i] = { ...cur, loaded, speed };
+                return next;
+              });
+              samples.current[i] = { t: now, bytes: loaded };
+            },
+            ctrl.signal,
+          );
+        } catch (e) {
+          // 预检之后刚好有人放了同名文件进来：不再追问，跳过这一个，其余继续
+          if (e instanceof ApiError && e.code === "name_conflict") {
+            patch(i, { status: "error", error: "已存在同名文件，已跳过" });
+            continue;
+          }
+          throw e;
+        }
+        if (!alive.current) break;
+        patch(i, { status: "done", loaded: item.file.size, speed: 0, savedName: result.name });
+        done++;
+      } catch (e) {
+        if (!alive.current) break;
+        if (e instanceof DOMException && e.name === "AbortError") break;
+        patch(i, { status: "error", error: errMsg(e) });
+      }
+    }
+    if (!alive.current) return;
+    controller.current = null;
+    setUploaded(done);
+    setPhase("done");
+    if (done > 0) onUploaded();
+  };
+
+  const start = async () => {
+    if (!items.length || phase !== "pick") return;
+    setError("");
+    let found: { name: string; proposed: string }[] = [];
+    try {
+      const r = await api.checkUpload(shareId, path, items.map((it) => it.file.name));
+      found = r.conflicts ?? [];
+    } catch (e) {
+      setError(errMsg(e));
+      return;
+    }
+    // 同一批里选了两个同名文件，服务端预检时都还不存在，也要算冲突
+    const picked = new Set<string>();
+    for (const it of items) {
+      if (picked.has(it.file.name)) {
+        found = [
+          ...found,
+          { name: it.file.name, proposed: it.file.name.replace(/(\.[^.]*)?$/, " (1)$1") },
+        ];
+      }
+      picked.add(it.file.name);
+    }
+    if (found.length) {
+      setConflicts(found); // 在弹窗里就地询问，取消就什么都不传
+      return;
+    }
+    await runUpload(false);
+  };
+
+  const totalSize = items.reduce((sum, it) => sum + it.file.size, 0);
+  const failed = items.filter((it) => it.status === "error").length;
+
+  return (
+    <Modal title="上传文件" onClose={finishClose} ref={ref}>
+      <div className="modal-body up-body">
+        <p className="muted text-note">上传到：{dir}</p>
+
+        {phase === "pick" ? (
+          <>
+            <div
+              className={`up-drop${dragging ? " dragging" : ""}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragging(false);
+                addFiles(e.dataTransfer.files);
+              }}
+            >
+              <div className="up-drop-icon" aria-hidden="true">
+                ↑
+              </div>
+              <strong>把文件拖到这里，或点下面按钮选择</strong>
+              <small>iPhone / iPad 从「文件」或照片里选，Windows / Mac 可多选或拖拽；最多 200 个，单个不超过 8 GB</small>
+              <input
+                ref={inputRef}
+                type="file"
+                multiple
+                className="up-file-input"
+                onChange={(e) => {
+                  if (e.target.files) addFiles(e.target.files);
+                  e.target.value = ""; // 允许再次选同一个文件
+                }}
+              />
+              <button type="button" className="secondary" onClick={() => inputRef.current?.click()}>
+                选择文件
+              </button>
+            </div>
+
+            {items.length > 0 ? (
+              <ul className="up-list">
+                {items.map((it, i) => (
+                  <li key={`${it.file.name}-${i}`}>
+                    <span className="up-name" title={it.file.name}>
+                      {it.file.name}
+                    </span>
+                    <small>{fmtSize(it.file.size)}</small>
+                    <button
+                      type="button"
+                      className="up-remove"
+                      aria-label={`移除 ${it.file.name}`}
+                      onClick={() => setItems((prev) => prev.filter((_, idx) => idx !== i))}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {items.length > 0 ? <p className="muted up-total">共 {items.length} 个文件，{fmtSize(totalSize)}</p> : null}
+            {error ? <p className="error">{error}</p> : null}
+            {conflicts ? (
+              <div className="up-conflict">
+                <p>当前文件夹已经有同名文件。取消这次操作就不会上传任何文件，已选的文件还会留在这里。</p>
+                <ul className="up-conflict-list">
+                  {conflicts.slice(0, 5).map((c, i) => (
+                    <li key={`${c.name}-${i}`}>
+                      「{c.name}」→「<b className="up-conflict-name">{c.proposed}</b>」
+                    </li>
+                  ))}
+                </ul>
+                {conflicts.length > 5 ? (
+                  <p className="muted">还有 {conflicts.length - 5} 个同名文件也会加序号。</p>
+                ) : null}
+                <div className="up-conflict-actions">
+                  <button type="button" className="secondary" onClick={() => setConflicts(null)}>
+                    取消
+                  </button>
+                  <button type="button" onClick={() => void runUpload(true)}>
+                    继续上传
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="modal-foot">
+                <button type="button" className="secondary" onClick={requestClose}>
+                  取消
+                </button>
+                <button type="button" disabled={!items.length} onClick={start}>
+                  开始上传
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <ul className="up-list up-progress-list">
+              {items.map((it, i) => (
+                <li key={`${it.file.name}-${i}`}>
+                  <div className="up-row">
+                    <span className="up-name" title={it.savedName ?? it.file.name}>
+                      {it.savedName ?? it.file.name}
+                    </span>
+                    <small>
+                      {it.status === "done"
+                        ? "完成"
+                        : it.status === "error"
+                          ? it.error
+                          : it.status === "uploading"
+                            ? `${fmtSize(it.loaded)} / ${fmtSize(it.file.size)}${it.speed > 0 ? ` · ${fmtSize(it.speed)}/s` : ""}`
+                            : "等待中"}
+                    </small>
+                  </div>
+                  {it.status === "uploading" || it.status === "done" ? (
+                    <div className="up-bar">
+                      <span
+                        style={{
+                          width: `${
+                            it.file.size > 0 ? Math.min(100, (it.loaded / it.file.size) * 100) : 100
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+            <div className="modal-foot">
+              {phase === "running" ? (
+                <button type="button" className="secondary" onClick={requestClose}>
+                  取消上传
+                </button>
+              ) : (
+                <>
+                  <p className="up-summary">
+                    已上传 {uploaded} 个文件{failed ? `，${failed} 个失败` : ""}
+                  </p>
+                  <button type="button" onClick={requestClose}>
+                    完成
+                  </button>
+                </>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}

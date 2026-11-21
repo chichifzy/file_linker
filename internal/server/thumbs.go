@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,8 +46,14 @@ var (
 	thumbFlight = map[string]chan struct{}{}
 )
 
-// 抽取时间点：跳过片头黑屏/台标，太短的视频退回到第 0 秒。
-var thumbSeekPoints = []string{"3", "0"}
+// thumbVersion 参与缓存 key：抽帧位置变了就升一位，旧缩略图自然失效重新生成。
+const thumbVersion = "v3"
+
+// thumbKey 与 mediaKey 分开：转码缓存和缩略图缓存的失效节奏不同，别互相牵连。
+func thumbKey(full string, size int64, modUnix int64) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("thumb|%s|%s|%d|%d", thumbVersion, full, size, modUnix)))
+	return hex.EncodeToString(sum[:8])
+}
 
 func initThumbs() {
 	root, err := os.UserCacheDir()
@@ -92,7 +102,7 @@ func pruneThumbs() {
 	}
 }
 
-// serveThumb 返回视频的第一帧（jpg）。生成过就一直是缓存文件，源文件改动后 key 变化会重新生成。
+// serveThumb 返回视频的缩略图（jpg）。生成过就一直是缓存文件，源文件改动后 key 变化会重新生成。
 func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request) {
 	if thumbRoot == "" {
 		writeError(w, http.StatusServiceUnavailable, "缩略图功能不可用")
@@ -112,7 +122,7 @@ func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "只有视频有缩略图")
 		return
 	}
-	key := mediaKey(full, fi.Size(), fi.ModTime().Unix())
+	key := thumbKey(full, fi.Size(), fi.ModTime().Unix())
 	dst := filepath.Join(thumbRoot, key+".jpg")
 	if !fileExists(dst) {
 		if ffmpegPath() == "" {
@@ -132,9 +142,31 @@ func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request) {
 	serveThumbFile(w, r, dst)
 }
 
+// probeDuration 用 `ffmpeg -i` 的输出解析总时长（秒）；解析不到返回 0。
+// ffmpeg 只给输入不给输出时必定报错退出，正常，只看 stderr 里的 Duration 行。
+func probeDuration(ff, src string) float64 {
+	cmd := exec.Command(ff, "-hide_banner", "-i", src)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = 10 * time.Second
+	_ = cmd.Run()
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		if d := parseFFDuration(strings.TrimSpace(line)); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 func makeThumb(ctx context.Context, ff, src, dst string) error {
+	// 抽帧位置：5% 处通常已经过了片头第一帧，比固定 3 秒更贴合片子本身。
+	// 探测不到时长就退回固定秒数；5% 失败（无索引的容器、超时）继续往后退。
+	points := []string{"3", "0"}
+	if d := probeDuration(ff, src); d > 0 {
+		points = append([]string{strconv.FormatFloat(d*0.05, 'f', 2, 64)}, points...)
+	}
 	var lastErr error
-	for _, ss := range thumbSeekPoints {
+	for _, ss := range points {
 		select {
 		case thumbSem <- struct{}{}:
 		case <-ctx.Done():
