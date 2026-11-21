@@ -46,6 +46,27 @@ function BoxIcon() {
   );
 }
 
+/** 压缩包：奶油色的小袋子 + 一条拉链，和文件夹一样走圆角柔和的路子 */
+export function ArchiveIcon({ size = 34 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 36 36" width={size} height={size} aria-hidden>
+      <path d="M10 3h11l8 8v17a5 5 0 0 1-5 5H10a5 5 0 0 1-5-5V8a5 5 0 0 1 5-5z" fill="#ffe3ab" />
+      <path d="M21 3l8 8h-5a3 3 0 0 1-3-3z" fill="#f6c877" />
+      {/* 拉链的布带 */}
+      <rect x="13.4" y="8.8" width="7.2" height="14" rx="3.4" fill="#f6c17a" />
+      {/* 齿：左右交错的短划，比一条直线更容易看出是拉链 */}
+      <g stroke="#dc9850" strokeWidth="1.15" strokeLinecap="round">
+        <path d="M15.1 10.4h1.6M18.5 12.2h1.6M15.1 14h1.6M18.5 15.8h1.6M15.1 17.6h1.6M18.5 19.4h1.6" />
+      </g>
+      {/* 拉链头 */}
+      <rect x="12.4" y="21.2" width="9.2" height="6.8" rx="3.3" fill="#ff9558" />
+      <circle cx="17" cy="24.2" r="1.45" fill="#fff" opacity="0.92" />
+      {/* 一点高光，看起来软软的 */}
+      <path d="M8.2 9.6c0-1.5.6-2.6 1.7-3.5" stroke="#fff" strokeWidth="1.4" strokeLinecap="round" opacity="0.6" />
+    </svg>
+  );
+}
+
 export function KindIcon({ kind }: { kind: Entry["kind"] }) {
   switch (kind) {
     case "dir":
@@ -56,6 +77,8 @@ export function KindIcon({ kind }: { kind: Entry["kind"] }) {
       return <DocIcon body="#ffc2d4" fold="#ff9fbb" />;
     case "video":
       return <VideoIcon />;
+    case "archive":
+      return <ArchiveIcon />;
     default:
       return <BoxIcon />;
   }

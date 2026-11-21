@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation } from "react-router";
-import type { Me } from "./api";
+import { api, type Me } from "./api";
 import { useAuth } from "./auth";
 import LoginPage from "./pages/LoginPage";
 import BrowserPage from "./pages/BrowserPage";
 import CachePage from "./pages/CachePage";
 import InvitesPage from "./pages/InvitesPage";
 import SharesPage from "./pages/SharesPage";
+import TasksPage from "./pages/TasksPage";
 import ShareQRModal from "./components/ShareQRModal";
 import PasswordModal from "./components/PasswordModal";
 
@@ -14,11 +15,12 @@ type NavItem = { to: string; label: string; element: React.ReactNode };
 
 // 前端只控制展示，真正的权限校验在后端。
 function navFor(me: Me): NavItem[] {
-  const items: NavItem[] = [
-    { to: "/", label: "文件浏览", element: <BrowserPage /> },
-    { to: "/cache", label: "转码缓存", element: <CachePage /> },
-  ];
-  if (me.role === "admin") {
+  const isAdmin = me.role === "admin";
+  const items: NavItem[] = [{ to: "/", label: "文件浏览", element: <BrowserPage /> }];
+  // 下载任务也只由管理员发起，普通用户没有这一页
+  if (isAdmin) items.push({ to: "/tasks", label: "任务列表", element: <TasksPage /> });
+  items.push({ to: "/cache", label: "转码缓存", element: <CachePage /> });
+  if (isAdmin) {
     items.push({ to: "/invites", label: "邀请码", element: <InvitesPage /> });
     // 本机，或本机允许在其他设备修改时，管理员才能设置共享目录
     if (me.canEditShares) items.push({ to: "/shares", label: "共享目录", element: <SharesPage isLocal={me.isLocal} /> });
@@ -104,8 +106,33 @@ export default function App() {
 function Layout({ user, logout }: { user: Me; logout: () => void }) {
   // 手机端侧边栏变成抽屉，切换页面后自动收起
   const [navOpen, setNavOpen] = useState(false);
+  // 正在下载的任务数，显示在「任务列表」旁边，方便关掉弹窗后知道还在下
+  const [running, setRunning] = useState(0);
   const { pathname, search } = useLocation();
   useEffect(() => setNavOpen(false), [pathname, search]);
+
+  useEffect(() => {
+    if (user.role !== "admin") return;
+    let stop = false;
+    let timer = 0;
+    const tick = async () => {
+      let n = 0;
+      try {
+        const r = await api.downloads();
+        n = r.jobs.filter((j) => j.status === "running").length;
+        if (!stop) setRunning(n);
+      } catch {
+        // 角标只是提示，查询失败时保持原样
+      }
+      // 没有任务时慢一点轮询，避免一直打扰服务
+      if (!stop) timer = window.setTimeout(tick, n > 0 ? 3000 : 15000);
+    };
+    timer = window.setTimeout(tick, 800);
+    return () => {
+      stop = true;
+      window.clearTimeout(timer);
+    };
+  }, [user.role]);
 
   const nav = navFor(user);
   return (
@@ -123,6 +150,11 @@ function Layout({ user, logout }: { user: Me; logout: () => void }) {
           {nav.map((item) => (
             <NavLink key={item.to} to={item.to} end>
               <span>{item.label}</span>
+              {item.to === "/tasks" && running > 0 && (
+                <span className="badge" title={`${running} 个任务正在下载`}>
+                  {running}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

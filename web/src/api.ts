@@ -10,6 +10,8 @@ export type Me = {
   isLocal: boolean;
   /** 管理员能否修改共享目录：本机，或本机开启了“允许在其它设备更改共享目录” */
   canEditShares: boolean;
+  /** 运行服务的系统：windows / darwin / linux，删除时据此说「回收站」还是「废纸篓」 */
+  platform: string;
 };
 
 export type Share = {
@@ -21,7 +23,7 @@ export type Share = {
   quick: { name: string; path: string }[];
 };
 
-export type Kind = "dir" | "text" | "image" | "video" | "binary";
+export type Kind = "dir" | "text" | "image" | "video" | "archive" | "binary";
 
 export type Entry = {
   name: string;
@@ -47,6 +49,8 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** 业务错误码，如 need_password / wrong_password */
+    public code = "",
   ) {
     super(message);
   }
@@ -71,6 +75,58 @@ export type ZipStatus = {
   total: number;
 };
 
+/** 服务端把链接指向的文件下载到本机的任务进度 */
+export type DownloadStatus = {
+  status: DownloadJob["status"];
+  error: string;
+  /** 最终文件名；还没确定下来时为空 */
+  name: string;
+  /** 已下载字节数 */
+  done: number;
+  /** 总字节数，服务器没有返回 Content-Length 时为 0 */
+  total: number;
+};
+
+/** 任务列表里的一条下载记录。记录只存在服务端内存里，重启服务后清空 */
+export type DownloadJob = {
+  id: string;
+  /** 最终文件名；还没解析出来时为空 */
+  name: string;
+  url: string;
+  status: "running" | "done" | "error" | "cancelled";
+  error: string;
+  /** 目标共享目录 id */
+  share: number;
+  /** 目标目录，相对共享目录；空字符串表示共享目录根 */
+  dir: string;
+  done: number;
+  total: number;
+  /** Unix 毫秒 */
+  startedAt: number;
+  /** Unix 毫秒，0 表示还在下载 */
+  finishedAt: number;
+};
+
+/** 解压任务：把 zip / 7z 解到压缩包所在的目录 */
+export type ExtractStatus = {
+  status: "running" | "done" | "error" | "cancelled";
+  error: string;
+  /** need_password / wrong_password：压缩包有密码或密码不对 */
+  code: string;
+  /** 压缩包文件名 */
+  name: string;
+  /** 已解压字节数 */
+  done: number;
+  /** 解压后的总字节数 */
+  total: number;
+  /** 已解压出的文件数 */
+  files: number;
+  /** 因符号链接或路径不安全而跳过的条目数 */
+  skipped: number;
+  /** 解压到的目录，相对共享目录 */
+  dir: string;
+};
+
 /** 打包好的 zip 下载地址，完整下载后服务器会删除该压缩包 */
 export const zipURL = (id: string) => `/api/fs/zip/${id}/download`;
 
@@ -83,7 +139,7 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
   });
   if (!res.ok) {
     const data = await res.json().catch(() => null);
-    throw new ApiError(res.status, data?.error ?? `请求失败（${res.status}）`);
+    throw new ApiError(res.status, data?.error ?? `请求失败（${res.status}）`, data?.code ?? "");
   }
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -204,6 +260,32 @@ export const api = {
   dirInfo: (share: number, path: string, signal: AbortSignal) =>
     request<DirInfo>("GET", `/fs/dirinfo?${qs({ share, path })}`, undefined, signal),
   createZip: (share: number, path: string) => request<{ id: string }>("POST", `/fs/zip?${qs({ share, path })}`),
+  /** 在共享目录的 path 下新建文件夹（仅管理员） */
+  mkdir: (share: number, path: string, name: string) =>
+    request<{ name: string; path: string }>("POST", `/fs/mkdir?${qs({ share, path })}`, { name }),
+  /** 重命名（仅管理员），name 是完整的新文件名，可以改扩展名 */
+  rename: (share: number, path: string, name: string) =>
+    request<{ name: string; path: string }>("POST", `/fs/rename?${qs({ share, path })}`, { name }),
+  /** 删除（仅管理员）：移到系统回收站 / 废纸篓，返回一句说明去了哪里 */
+  remove: (share: number, path: string) =>
+    request<{ where: string }>("POST", `/fs/delete?${qs({ share, path })}`),
+  /** 解压 zip / 7z 到压缩包所在的目录（仅管理员），立即返回任务 id。
+   *  压缩包有密码时会返回 code=need_password / wrong_password，前端据此弹密码框 */
+  startExtract: (share: number, path: string, password: string) =>
+    request<{ id: string; name: string; total: number }>("POST", `/fs/extract?${qs({ share, path })}`, { password }),
+  extractStatus: (id: string) => request<ExtractStatus>("GET", `/fs/extract/${id}`),
+  /** 取消解压；已经结束的任务则是把记录去掉 */
+  cancelExtract: (id: string) => request<void>("DELETE", `/fs/extract/${id}`),
+  /** 让服务器把链接指向的文件下载到 path 目录（仅管理员），立即返回任务 id */
+  startDownload: (share: number, path: string, url: string) =>
+    request<{ id: string; name: string }>("POST", `/fs/download?${qs({ share, path })}`, { url }),
+  downloadStatus: (id: string) => request<DownloadStatus>("GET", `/fs/download/${id}`),
+  /** 当前账号的全部下载任务（最新的在前），用于侧边栏「任务列表」 */
+  downloads: () => request<{ jobs: DownloadJob[] }>("GET", "/fs/downloads"),
+  /** 清掉已经结束的记录，正在下载的任务保留 */
+  clearDownloads: () => request<{ removed: number }>("DELETE", "/fs/downloads"),
+  /** 取消正在下载的任务并删除没下完的临时文件；对已结束的任务则是移除记录 */
+  cancelDownload: (id: string) => request<void>("DELETE", `/fs/download/${id}`),
   /** 判断视频的真实容器与编码，用于播放失败时说明原因、决定走封装还是重编码 */
   codec: (share: number, path: string) => request<MediaInfo>("GET", `/fs/codec?${qs({ share, path })}`),
   /** 请求把视频转成可播放的 mp4；同一文件只会转一次，已转过时直接返回 done */

@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import { api, errMsg, fileURL, hlsURL, thumbURL, transcodeURL, zipURL, type DirInfo, type Entry, type MediaInfo, type Share } from "../api";
+import { useMe } from "../auth";
 import { useConfirm } from "../components/Confirm";
 import Modal, { type ModalHandle } from "../components/Modal";
-import { KindIcon, PlayBadge } from "../components/FileIcons";
+import { ArchiveIcon, KindIcon, PlayBadge } from "../components/FileIcons";
+import { DownloadModal, ExtractModal, NewFolderModal, RenameModal } from "../components/CreateModals";
+import ItemMenu from "../components/ItemMenu";
+import { fmtSize } from "../format";
+
+// 缓存页也在用，保持原来的导出位置
+export { fmtSize };
 
 const HIDDEN_KEY = "showHidden";
 
@@ -105,18 +112,6 @@ function VideoThumb({ thumb, src }: { thumb: string; src: string }) {
   );
 }
 
-export function fmtSize(n: number) {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
-}
-
 const fmtTime = (ms: number) => new Date(ms).toLocaleString();
 
 /** 字节/秒 → 8.4 MB/s */
@@ -136,18 +131,33 @@ export function fmtClock(sec: number) {
 }
 
 export default function BrowserPage() {
+  const { me } = useMe();
   const [params, setParams] = useSearchParams();
   const [shares, setShares] = useState<Share[] | null>(null);
   const [error, setError] = useState("");
   const [showHidden, setShowHidden] = useState(() => localStorage.getItem(HIDDEN_KEY) === "1");
+  // 新建文件夹 / 下载完成后让列表重新加载：改 rev 即可
+  const [rev, setRev] = useState(0);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => {
     api.shares().then(setShares, (e) => setError(errMsg(e)));
   }, []);
 
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(""), 6000);
+    return () => window.clearTimeout(t);
+  }, [notice]);
+
   const toggleHidden = (v: boolean) => {
     setShowHidden(v);
     localStorage.setItem(HIDDEN_KEY, v ? "1" : "0");
+  };
+
+  const changed = (msg: string) => {
+    setRev((v) => v + 1);
+    if (msg) setNotice(msg);
   };
 
   if (error) return <p className="error">{error}</p>;
@@ -185,6 +195,7 @@ export default function BrowserPage() {
           ))}
         </div>
       )}
+      {notice && <p className="success">{notice}</p>}
       <Toolbar
         key={`${share.id}/${path}/${q}`}
         share={share}
@@ -192,9 +203,21 @@ export default function BrowserPage() {
         q={q}
         showHidden={showHidden}
         onHidden={toggleHidden}
+        canWrite={me.role === "admin"}
+        onChanged={changed}
         go={go}
       />
-      <Listing share={share} path={path} q={q} showHidden={showHidden} go={go} />
+      <Listing
+        share={share}
+        path={path}
+        q={q}
+        showHidden={showHidden}
+        rev={rev}
+        canWrite={me.role === "admin"}
+        onChanged={changed}
+        platform={me.platform}
+        go={go}
+      />
     </>
   );
 }
@@ -207,6 +230,8 @@ function Toolbar({
   q,
   showHidden,
   onHidden,
+  canWrite,
+  onChanged,
   go,
 }: {
   share: Share;
@@ -214,29 +239,95 @@ function Toolbar({
   q: string;
   showHidden: boolean;
   onHidden: (v: boolean) => void;
+  /** 管理员可以在当前目录新建文件夹、按链接下载文件 */
+  canWrite: boolean;
+  onChanged: (msg: string) => void;
   go: Go;
 }) {
   const [input, setInput] = useState(q);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [modal, setModal] = useState<"folder" | "download" | null>(null);
+  const addRef = useRef<HTMLDivElement>(null);
   const parts = path ? path.split("/") : [];
+  const dir = path ? `${share.name}/${path}` : share.name;
+
+  // 点菜单外面或按 Esc 收起
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!addRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
   const submit = (e: FormEvent) => {
     e.preventDefault();
     go({ q: input.trim() });
   };
   return (
     <div className="browser-head">
-      <nav className="crumbs" aria-label="当前位置">
-        <button className="link" onClick={() => go({ path: "" })}>
-          {share.name}
-        </button>
-        {parts.map((name, i) => (
-          <span key={i}>
-            <span className="muted"> / </span>
-            <button className="link" onClick={() => go({ path: parts.slice(0, i + 1).join("/") })}>
-              {name}
+      <div className="crumbs-row">
+        <nav className="crumbs" aria-label="当前位置">
+          <button className="link" onClick={() => go({ path: "" })}>
+            {share.name}
+          </button>
+          {parts.map((name, i) => (
+            <span key={i}>
+              <span className="muted"> / </span>
+              <button className="link" onClick={() => go({ path: parts.slice(0, i + 1).join("/") })}>
+                {name}
+              </button>
+            </span>
+          ))}
+        </nav>
+        {canWrite && (
+          <div className="add-wrap" ref={addRef}>
+            <button
+              type="button"
+              className="add-btn"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="新建"
+              title="新建文件夹 / 下载文件"
+              onClick={() => setMenuOpen((v) => !v)}
+            >
+              +
             </button>
-          </span>
-        ))}
-      </nav>
+            {menuOpen && (
+              <div className="add-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setModal("folder");
+                  }}
+                >
+                  新建文件夹
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setModal("download");
+                  }}
+                >
+                  下载文件
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
       <div className="filters quick-links">
         <button className={path === "" && !q ? "on" : undefined} onClick={() => go({ path: "", q: "" })}>
           ⤒ 顶层目录
@@ -266,47 +357,136 @@ function Toolbar({
           显示隐藏文件
         </label>
       </form>
+      {modal === "folder" && (
+        <NewFolderModal
+          shareId={share.id}
+          path={path}
+          dir={dir}
+          onClose={() => setModal(null)}
+          onCreated={(name) => {
+            setModal(null);
+            onChanged(`已创建文件夹「${name}」`);
+          }}
+        />
+      )}
+      {modal === "download" && (
+        <DownloadModal
+          shareId={share.id}
+          path={path}
+          dir={dir}
+          onClose={() => setModal(null)}
+          onFinished={(name) => onChanged(name ? `已下载「${name}」` : "")}
+        />
+      )}
     </div>
   );
 }
 
-function Listing({ share, path, q, showHidden, go }: { share: Share; path: string; q: string; showHidden: boolean; go: Go }) {
+function Listing({
+  share,
+  path,
+  q,
+  showHidden,
+  rev,
+  canWrite,
+  onChanged,
+  platform,
+  go,
+}: {
+  share: Share;
+  path: string;
+  q: string;
+  showHidden: boolean;
+  /** 变化时重新读取目录，用于新建文件夹、下载、重命名、删除后刷新 */
+  rev: number;
+  /** 管理员能在行尾看到「⋯」菜单（重命名、删除） */
+  canWrite: boolean;
+  onChanged: (msg: string) => void;
+  /** 运行服务的系统，决定删除时叫「回收站」还是「废纸篓」 */
+  platform: string;
+  go: Go;
+}) {
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [preview, setPreview] = useState<Entry | null>(null);
   const [detail, setDetail] = useState<Entry | null>(null);
+  const [rename, setRename] = useState<Entry | null>(null);
+  const [extract, setExtract] = useState<Entry | null>(null);
+  const [busy, setBusy] = useState("");
+  const [menu, setMenu] = useState<{ entry: Entry; anchor: HTMLElement } | null>(null);
+  const confirm = useConfirm();
+  const trashName = platform === "darwin" ? "废纸篓" : "回收站";
 
-  const load = useCallback(() => {
-    setEntries(null);
-    setError("");
-    const req = q
-      ? api.search(share.id, path, q, showHidden)
-      : api.list(share.id, path, showHidden).then((r) => ({ entries: r.entries, truncated: false }));
-    let stale = false;
-    req.then(
-      (r) => {
-        if (stale) return;
-        setEntries(r.entries);
-        setTruncated(r.truncated);
-      },
-      (e) => !stale && setError(errMsg(e)),
-    );
-    return () => {
-      stale = true;
-    };
-  }, [share.id, path, q, showHidden]);
-  useEffect(load, [load]);
+  // keep=true 时保留旧列表继续显示（只是刷新），不闪一下「加载中」
+  const load = useCallback(
+    (keep = false) => {
+      if (!keep) setEntries(null);
+      setError("");
+      const req = q
+        ? api.search(share.id, path, q, showHidden)
+        : api.list(share.id, path, showHidden).then((r) => ({ entries: r.entries, truncated: false }));
+      let stale = false;
+      req.then(
+        (r) => {
+          if (stale) return;
+          setEntries(r.entries);
+          setTruncated(r.truncated);
+        },
+        (e) => !stale && setError(errMsg(e)),
+      );
+      return () => {
+        stale = true;
+      };
+    },
+    [share.id, path, q, showHidden],
+  );
+
+  // 只有目录 / 搜索词 / 显示隐藏变化时才清空列表；光是 rev 变化（增删改名）就原地刷新
+  const listKey = useRef("");
+  useEffect(() => {
+    const key = `${share.id}|${path}|${q}|${showHidden}`;
+    const keep = listKey.current === key;
+    listKey.current = key;
+    // 换目录了，上一处操作留下的错误提示就没意义了
+    if (!keep) setActionError("");
+    return load(keep);
+  }, [load, rev]);
+
+  const remove = async (e: Entry) => {
+    if (busy) return;
+    const ok = await confirm({
+      title: `删除「${e.name}」`,
+      message: `${e.isDir ? "文件夹" : "文件"}「${e.name}」将被移到${trashName}，之后需要的话可以还原。`,
+      confirmText: `移到${trashName}`,
+      danger: true,
+    });
+    if (!ok) return;
+    setActionError("");
+    // 大文件夹移进回收站要花点时间，先说一声在做什么
+    setBusy(`正在把「${e.name}」移到${trashName}…`);
+    try {
+      const r = await api.remove(share.id, e.path);
+      onChanged(`已把「${e.name}」移到${r.where || trashName}`);
+    } catch (err) {
+      setActionError(errMsg(err));
+    } finally {
+      setBusy("");
+    }
+  };
 
   if (error) return <p className="error">{error}</p>;
   if (!entries) return <p className="loading">{q ? "搜索中…" : "加载中…"}</p>;
 
   const open = (e: Entry) => (e.isDir ? go({ path: e.path, q: "" }) : setPreview(e));
   // 预览弹窗中左右切换只在可预览的文件之间进行
-  const viewable = entries.filter((e) => !e.isDir && e.kind !== "binary");
+  const viewable = entries.filter((e) => !e.isDir && e.kind !== "binary" && e.kind !== "archive");
 
   return (
     <>
+      {actionError && <p className="error">{actionError}</p>}
+      {busy && <p className="muted">{busy}</p>}
       {q && (
         <p className="muted">
           找到 {entries.length} 项{truncated && "（结果过多或搜索超时，只显示部分，请换个更精确的关键字）"}
@@ -315,7 +495,7 @@ function Listing({ share, path, q, showHidden, go }: { share: Share; path: strin
       {entries.length === 0 ? (
         <p className="muted">{q ? "没有匹配的文件。" : "空目录。"}</p>
       ) : (
-        <ul className="file-list">
+        <ul className={canWrite ? "file-list has-actions" : "file-list"}>
           {entries.map((e) => (
             <li key={e.path}>
               <button className={e.kind === "binary" ? "file-row binary" : "file-row"} onClick={() => open(e)}>
@@ -341,9 +521,75 @@ function Listing({ share, path, q, showHidden, go }: { share: Share; path: strin
                   文件夹详情
                 </button>
               )}
+              {canWrite && (
+                <div className="file-actions">
+                  <button
+                    type="button"
+                    className="file-more"
+                    aria-haspopup="menu"
+                    aria-expanded={menu?.entry.path === e.path}
+                    aria-label={`更多操作：${e.name}`}
+                    title="更多操作"
+                    onClick={(ev) => {
+                      const anchor = ev.currentTarget;
+                      setMenu((m) => (m?.entry.path === e.path ? null : { entry: e, anchor }));
+                    }}
+                  >
+                    ⋯
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
+      )}
+      {menu && (
+        <ItemMenu
+          anchor={menu.anchor}
+          trashName={trashName}
+          onClose={() => setMenu(null)}
+          onRename={() => {
+            setRename(menu.entry);
+            setMenu(null);
+          }}
+          onExtract={
+            menu.entry.kind === "archive"
+              ? () => {
+                  const target = menu.entry;
+                  setMenu(null);
+                  setExtract(target);
+                }
+              : undefined
+          }
+          onDelete={() => {
+            const target = menu.entry;
+            setMenu(null);
+            void remove(target);
+          }}
+        />
+      )}
+      {rename && (
+        <RenameModal
+          shareId={share.id}
+          path={rename.path}
+          name={rename.name}
+          dir={path ? `${share.name}/${path}` : share.name}
+          onClose={() => setRename(null)}
+          onRenamed={(name) => {
+            setRename(null);
+            onChanged(`已把「${rename.name}」重命名为「${name}」`);
+          }}
+        />
+      )}
+      {extract && (
+        <ExtractModal
+          shareId={share.id}
+          path={extract.path}
+          name={extract.name}
+          dir={path ? `${share.name}/${path}` : share.name}
+          onClose={() => setExtract(null)}
+          onExtracted={onChanged}
+        />
       )}
       {preview && (
         <Preview
@@ -353,6 +599,14 @@ function Listing({ share, path, q, showHidden, go }: { share: Share; path: strin
           siblings={viewable}
           onNavigate={setPreview}
           onClose={() => setPreview(null)}
+          onExtract={
+            canWrite
+              ? (e) => {
+                  setPreview(null);
+                  setExtract(e);
+                }
+              : undefined
+          }
         />
       )}
       {detail && <DirInfoModal share={share} entry={detail} onClose={() => setDetail(null)} />}
@@ -578,12 +832,15 @@ function Preview({
   siblings,
   onNavigate,
   onClose,
+  onExtract,
 }: {
   share: Share;
   entry: Entry;
   siblings: Entry[];
   onNavigate: (e: Entry) => void;
   onClose: () => void;
+  /** 压缩包才有：解压到当前文件夹（仅管理员） */
+  onExtract?: (e: Entry) => void;
 }) {
   const ref = useRef<ModalHandle>(null);
   const [mediaError, setMediaError] = useState<{ code: number; message: string } | null>(null);
@@ -1002,6 +1259,27 @@ function Preview({
           <div className="viewer-broken">
             <span>不支持预览该类型的文件</span>
             <small>可以下载后在本机打开</small>
+          </div>
+        )}
+        {entry.kind === "archive" && (
+          <div className="viewer-archive">
+            <ArchiveIcon size={72} />
+            <strong>压缩包</strong>
+            <small>
+              {onExtract
+                ? "解压到当前文件夹后，就能像普通文件一样浏览里面的内容"
+                : "压缩包不能直接预览，解压出来才能浏览里面的内容"}
+            </small>
+            {onExtract ? (
+              <button
+                type="button"
+                onClick={() => (ref.current ? ref.current.close(() => onExtract(entry)) : onExtract(entry))}
+              >
+                解压到当前文件夹
+              </button>
+            ) : (
+              <small className="muted">解压需要管理员权限</small>
+            )}
           </div>
         )}
         <div className="row viewer-foot">

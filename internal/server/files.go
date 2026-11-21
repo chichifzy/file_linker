@@ -25,6 +25,8 @@ var (
 	// mkv/avi/flv 等浏览器不支持的容器也当作视频：点开后会先在服务端换封装
 	// （编码是 H.264 时几秒完成），不必让用户先下载再找播放器
 	videoExts = setOf("mp4", "m4v", "webm", "mov", "ogv", "mkv", "avi", "flv", "wmv", "mpg", "mpeg", "m2ts")
+	// 压缩包：不能预览，但管理员可以解压到当前目录
+	archiveExts = setOf("zip", "7z")
 )
 
 // 文本预览最多读取的字节数，前端通过 Range 请求只取开头这一段。
@@ -52,6 +54,8 @@ func fileKind(name string) string {
 		return "image"
 	case videoExts[ext]:
 		return "video"
+	case archiveExts[ext]:
+		return "archive"
 	}
 	return "binary"
 }
@@ -152,8 +156,8 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := fileKind(filepath.Base(full))
 	download := r.URL.Query().Get("download") == "1"
-	// 不支持预览的文件只能作为附件下载，不能在浏览器中直接打开
-	if kind == "binary" && !download {
+	// 不支持预览的文件（含压缩包）只能作为附件下载，不能在浏览器中直接打开
+	if (kind == "binary" || kind == "archive") && !download {
 		writeError(w, http.StatusForbidden, "不支持查看该类型的文件")
 		return
 	}
@@ -173,7 +177,7 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
 	if kind == "text" {
 		// 一律按纯文本输出，避免 html/svg 等在本站域名下执行脚本
 		h.Set("Content-Type", "text/plain; charset=utf-8")
-	} else if kind == "binary" {
+	} else if kind == "binary" || kind == "archive" {
 		h.Set("Content-Type", "application/octet-stream")
 	} else if ct := mime.TypeByExtension(strings.ToLower(filepath.Ext(full))); ct != "" {
 		h.Set("Content-Type", ct)
@@ -283,6 +287,7 @@ func (s *Server) fileCodec(w http.ResponseWriter, r *http.Request) {
 }
 
 const dirInfoTimeout = 15 * time.Second
+
 // 同时进行的文件夹大小统计数，避免多人同时统计大目录拖慢磁盘
 var dirInfoSem = make(chan struct{}, 2)
 

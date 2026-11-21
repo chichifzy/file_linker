@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -192,7 +193,9 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		*User
 		IsLocal       bool `json:"isLocal"`
 		CanEditShares bool `json:"canEditShares"`
-	}{currentUser(r), isLocalRequest(r), canEdit})
+		// 运行服务的系统，前端据此把删除说成「回收站」还是「废纸篓」
+		Platform string `json:"platform"`
+	}{currentUser(r), isLocalRequest(r), canEdit, runtime.GOOS})
 }
 
 // changePassword 校验原密码后修改密码。当前会话保持有效，其他设备上的会话全部失效。

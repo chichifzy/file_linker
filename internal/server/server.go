@@ -41,6 +41,25 @@ func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler 
 	m.Handle("GET /api/fs/codec", s.requireUser(s.fileCodec))
 	m.Handle("GET /api/fs/search", s.requireUser(s.search))
 	m.Handle("GET /api/fs/dirinfo", s.requireUser(s.dirInfo))
+	// 写入共享目录（仅管理员）：新建文件夹、把链接指向的文件下载到当前目录
+	m.Handle("POST /api/fs/mkdir", s.requireAdmin(s.createDir))
+	// 重命名、删除（删除是移到系统回收站 / 废纸篓）
+	m.Handle("POST /api/fs/rename", s.requireAdmin(s.renameEntry))
+	m.Handle("POST /api/fs/delete", s.requireAdmin(s.deleteEntry))
+	// 解压 zip / 7z 到压缩包所在的当前目录
+	initExtract()
+	m.Handle("POST /api/fs/extract", s.requireAdmin(s.createExtract))
+	m.Handle("GET /api/fs/extract/{id}", s.requireAdmin(s.extractStatus))
+	m.Handle("DELETE /api/fs/extract/{id}", s.requireAdmin(s.cancelExtract))
+	initDownloads()
+	// 上次运行中没下完的任务已经随进程一起没了，标记成中断，免得列表里一直显示「下载中」
+	s.markInterruptedDownloads()
+	m.Handle("POST /api/fs/download", s.requireAdmin(s.createDownload))
+	// 任务列表：侧边栏「任务列表」页，关掉弹窗后也能回来看进度
+	m.Handle("GET /api/fs/downloads", s.requireAdmin(s.listDownloads))
+	m.Handle("DELETE /api/fs/downloads", s.requireAdmin(s.clearDownloads))
+	m.Handle("GET /api/fs/download/{id}", s.requireAdmin(s.downloadStatus))
+	m.Handle("DELETE /api/fs/download/{id}", s.requireAdmin(s.cancelDownload))
 	initZip()
 	m.Handle("POST /api/fs/zip", s.requireUser(s.createZip))
 	m.Handle("GET /api/fs/zip/{id}", s.requireUser(s.zipStatus))

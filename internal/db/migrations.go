@@ -48,4 +48,26 @@ CREATE TABLE settings (
 	value TEXT NOT NULL
 );
 `,
+	// #3 下载任务记录：持久保存，只有用户主动删除才消失
+	`
+CREATE TABLE downloads (
+	id          TEXT PRIMARY KEY,
+	user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	share_id    INTEGER NOT NULL,
+	dir         TEXT NOT NULL DEFAULT '',              -- 目标目录，相对共享目录
+	url         TEXT NOT NULL,
+	name        TEXT NOT NULL DEFAULT '',              -- 最终文件名
+	status      TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'done', 'error', 'cancelled')),
+	error       TEXT NOT NULL DEFAULT '',
+	done        INTEGER NOT NULL DEFAULT 0,            -- 已下载字节数
+	total       INTEGER NOT NULL DEFAULT 0,            -- 总字节数，0 表示服务器没给 Content-Length
+	started_at  INTEGER NOT NULL,                      -- Unix 毫秒
+	finished_at INTEGER NOT NULL DEFAULT 0             -- Unix 毫秒，0 表示还没结束
+);
+CREATE INDEX downloads_user_started ON downloads(user_id, started_at DESC);
+`,
+	// #4 下载中的临时文件名：进程被强杀时用它清理留在共享目录里的半个文件
+	`
+ALTER TABLE downloads ADD COLUMN tmp TEXT NOT NULL DEFAULT '';
+`,
 }
