@@ -429,6 +429,36 @@ button.dir-item:hover:not(:disabled) { background: var(--primary-softer); }
   .head-actions { gap: 6px; }
 }
 
+/* 手机端悬浮的「←」返回上一级 /「→」撤销返回，桌面端不显示 */
+.nav-fab { display: none; }
+@media (max-width: 768px) {
+  .nav-fab {
+    position: fixed; z-index: 15;
+    left: 16px; bottom: calc(20px + env(safe-area-inset-bottom));
+    display: flex; align-items: center; gap: 10px;
+    opacity: 0.5; transition: opacity 0.25s ease;
+  }
+  .nav-fab.lit { opacity: 1; }
+  /* 给悬浮按钮留出位置，免得挡住最后一行 */
+  .file-list { margin-bottom: 72px; }
+  .nav-fab button {
+    padding: 0; border-radius: 50%; display: grid; place-items: center;
+    line-height: 1; box-shadow: var(--shadow-lg);
+  }
+  button.nav-fab-back { position: relative; z-index: 1; width: 46px; height: 46px; font-size: 22px; }
+  button.nav-fab-back:disabled { background: #c9d3ce; color: #fff; opacity: 1; box-shadow: var(--shadow); }
+  button.nav-fab-redo {
+    width: 34px; height: 34px; font-size: 16px;
+    animation: nav-fab-split 0.36s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+}
+/* 从「←」的中心冒出来，一边变大一边向右弹开，像是从它身上分裂出来 */
+@keyframes nav-fab-split {
+  from { transform: translateX(-50px) scale(0.3); opacity: 0; }
+  40% { opacity: 1; }
+  to { transform: none; opacity: 1; }
+}
+
 /* 页面标题行：左侧标题，右侧主操作按钮 */
 .page-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;

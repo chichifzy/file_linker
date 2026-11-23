@@ -168,10 +168,31 @@ export default function BrowserPage() {
   // 新建文件夹 / 下载完成后让列表重新加载：改 rev 即可
   const [rev, setRev] = useState(0);
   const [notice, setNotice] = useState("");
+  // 手机端「←」返回上一级后可以用「→」撤销：at 是返回后所在的目录，to 是返回前的目录
+  const [undo, setUndo] = useState<{ share: number; at: string; to: string }[]>([]);
+  const curShare = Number(params.get("share")) || shares?.[0]?.id || 0;
+  const curPath = params.get("path") ?? "";
+  // 悬浮按钮平时半透明，点一下变成不透明，2.5 秒后恢复
+  const [fabLit, setFabLit] = useState(false);
+  const fabTimer = useRef<number | undefined>(undefined);
+  const lightFab = () => {
+    setFabLit(true);
+    window.clearTimeout(fabTimer.current);
+    fabTimer.current = window.setTimeout(() => setFabLit(false), 2500);
+  };
+  useEffect(() => () => window.clearTimeout(fabTimer.current), []);
 
   useEffect(() => {
     api.shares().then(setShares, (e) => setError(errMsg(e)));
   }, []);
+
+  // 通过其他方式换了目录（点面包屑、进子目录等），之前的返回就不能再撤销了
+  useEffect(() => {
+    setUndo((u) => {
+      const top = u[u.length - 1];
+      return !top || (top.share === curShare && top.at === curPath) ? u : [];
+    });
+  }, [curShare, curPath]);
 
   useEffect(() => {
     if (!notice) return;
@@ -213,6 +234,20 @@ export default function BrowserPage() {
     setParams(p);
   };
 
+  const goUp = () => {
+    if (!path) return;
+    const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    setUndo((u) => [...u, { share: share.id, at: parent, to: path }]);
+    go({ path: parent, q: "" });
+  };
+  const lastUndo = undo[undo.length - 1];
+  const canRedo = !!lastUndo && lastUndo.share === share.id && lastUndo.at === path;
+  const redo = () => {
+    if (!canRedo) return;
+    setUndo((u) => u.slice(0, -1));
+    go({ path: lastUndo.to, q: "" });
+  };
+
   return (
     <>
       {shares.length > 1 && (
@@ -247,6 +282,16 @@ export default function BrowserPage() {
         platform={me.platform}
         go={go}
       />
+      <div className={fabLit ? "nav-fab lit" : "nav-fab"} onPointerDown={lightFab}>
+        <button type="button" className="nav-fab-back" disabled={!path} aria-label="返回上一级" title="返回上一级" onClick={goUp}>
+          ←
+        </button>
+        {canRedo && (
+          <button type="button" className="nav-fab-redo" aria-label="撤销返回" title="撤销返回" onClick={redo}>
+            →
+          </button>
+        )}
+      </div>
     </>
   );
 }
