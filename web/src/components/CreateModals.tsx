@@ -786,7 +786,7 @@ export function UploadModal({
                 ↑
               </div>
               <strong>把文件拖到这里，或点下面按钮选择</strong>
-              <small>iPhone / iPad 从「文件」或照片里选，Windows / Mac 可多选或拖拽；最多 200 个，单个不超过 8 GB</small>
+              <small>最多 200 个，单个不超过 8 GB</small>
               <input
                 ref={inputRef}
                 type="file"
