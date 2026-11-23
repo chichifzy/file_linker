@@ -118,12 +118,16 @@ func (s *Server) serveThumb(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "文件不存在")
 		return
 	}
-	if fileKind(fi.Name()) != "video" {
-		writeError(w, http.StatusBadRequest, "只有视频有缩略图")
-		return
-	}
 	key := thumbKey(full, fi.Size(), fi.ModTime().Unix())
 	dst := filepath.Join(thumbRoot, key+".jpg")
+	if fileKind(fi.Name()) == "image" {
+		s.serveImageThumb(w, r, full, key, dst)
+		return
+	}
+	if fileKind(fi.Name()) != "video" {
+		writeError(w, http.StatusBadRequest, "只有图片和视频有缩略图")
+		return
+	}
 	if !fileExists(dst) {
 		if ffmpegPath() == "" {
 			writeError(w, http.StatusServiceUnavailable, "没有安装 ffmpeg，无法生成缩略图")

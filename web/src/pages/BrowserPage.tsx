@@ -113,6 +113,34 @@ function VideoThumb({ thumb, src }: { thumb: string; src: string }) {
   );
 }
 
+/** 图片缩略图：先用服务端缩好的小图，生成失败（svg、avif 等）时退回原图 */
+function ImageThumb({ thumb, src }: { thumb: string; src: string }) {
+  const [fallback, setFallback] = useState(false);
+  return <img src={fallback ? src : thumb} alt="" loading="lazy" onError={() => setFallback(true)} />;
+}
+
+/** 预览大图：原图下载完之前显示转圈，避免模态框一片空白 */
+function ViewerImage({ src, alt }: { src: string; alt: string }) {
+  const [loading, setLoading] = useState(true);
+  return (
+    <div className={loading ? "viewer-media viewer-img-loading" : "viewer-media"}>
+      <img
+        className="viewer-img"
+        src={src}
+        alt={alt}
+        onLoad={() => setLoading(false)}
+        onError={() => setLoading(false)}
+      />
+      {loading && (
+        <div className="video-buffer">
+          <span className="video-buffer-ring" aria-hidden="true" />
+          <span>正在加载图片…</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const fmtTime = (ms: number) => new Date(ms).toLocaleString();
 
 /** 字节/秒 → 8.4 MB/s */
@@ -631,7 +659,7 @@ function Listing({
               <button className={e.kind === "binary" ? "file-row binary" : "file-row"} onClick={() => open(e)}>
                 <span className="file-icon">
                   {e.kind === "image" ? (
-                    <img src={fileURL(share.id, e.path)} alt="" loading="lazy" />
+                    <ImageThumb thumb={thumbURL(share.id, e.path)} src={fileURL(share.id, e.path)} />
                   ) : e.kind === "video" ? (
                     <VideoThumb thumb={thumbURL(share.id, e.path)} src={fileURL(share.id, e.path)} />
                   ) : (
@@ -1259,7 +1287,7 @@ function Preview({
   return (
     <Modal title={entry.name} className="image-viewer" onClose={onClose} ref={ref}>
       <div className="modal-body">
-        {entry.kind === "image" && <img className="viewer-img" src={src} alt={entry.name} />}
+        {entry.kind === "image" && <ViewerImage key={src} src={src} alt={entry.name} />}
         {entry.kind === "video" &&
           (transcode.phase === "starting" ? (
             <div className="viewer-broken">

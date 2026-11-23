@@ -489,6 +489,9 @@ dialog.modal.image-viewer { width: min(960px, calc(100vw - 32px)); }
 }
 /* 播放器容器：缓冲浮层以它为参照居中 */
 .viewer-media { position: relative; display: flex; justify-content: center; max-width: 100%; }
+/* 原图还没到时占住位置，转圈浮层才有地方居中 */
+.viewer-img-loading { width: 100%; min-height: 240px; }
+.viewer-img-loading .viewer-img { visibility: hidden; position: absolute; }
 .video-buffer {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
   display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px);
