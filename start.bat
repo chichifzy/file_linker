@@ -10,6 +10,21 @@ rem are decoded with the ANSI code page and get mis-split into commands.
 setlocal
 cd /d "%~dp0"
 
+rem Reuse an instance that is already running: open its real URL and let
+rem Ctrl+C in this window stop it. Must run before the build, because a
+rem running exe cannot be overwritten by go build on Windows.
+if "%~1"=="" if exist "bin\file_linker.exe" (
+  call :existing
+  if not errorlevel 1 exit /b 0
+  if errorlevel 2 (
+    echo.
+    echo 已有实例在运行，但无法确认它的状态（可能正在启动）。
+    echo 请关闭之前启动的服务窗口后再试。
+    pause
+    exit /b 1
+  )
+)
+
 call :need go "Go" GoLang.Go "https://go.dev/dl/" || goto fail
 call :need node "Node.js" OpenJS.NodeJS.LTS "https://nodejs.org/" || goto fail
 call :need_pnpm || goto fail
@@ -51,6 +66,27 @@ if errorlevel 1 goto create
 :run
 bin\file_linker.exe %*
 pause
+exit /b 0
+
+rem Exit codes: 0 handled, 1 not running, 2 usage (old exe), 3 bad args, 4 unconfirmed.
+:existing
+rem Probe quietly first: an old exe prints its usage for unknown subcommands.
+bin\file_linker.exe status >nul 2>nul
+if not errorlevel 1 goto :existing_attach
+if errorlevel 4 exit /b 2
+rem No instance on the default database. If file_linker.exe is still running it
+rem uses another -db or is an old build; go build cannot overwrite a running exe.
+tasklist /FI "IMAGENAME eq file_linker.exe" /NH 2>nul | find /I "file_linker.exe" >nul && (
+  echo.
+  echo 检测到 file_linker 正在运行（可能使用了别的数据库，或是旧版本）。
+  echo 请先关闭那个服务窗口，再重新双击 start.bat。
+  pause
+  exit /b 2
+)
+exit /b 1
+
+:existing_attach
+bin\file_linker.exe status --attach --open
 exit /b 0
 
 :fail

@@ -14,14 +14,29 @@ import (
 )
 
 type Server struct {
-	db           *sql.DB
-	secureCookie bool
-	port         string // 监听端口，用于生成分享地址
+	db            *sql.DB
+	secureCookie  bool
+	port          string // 监听端口，用于生成分享地址
+	shutdownToken string // 停止服务的令牌，为空时禁用 /api/shutdown
+	stop          func() // 停止服务的回调，由 main 提供
 }
 
-func New(db *sql.DB, static fs.FS, secureCookie bool, port string) http.Handler {
-	s := &Server{db: db, secureCookie: secureCookie, port: port}
+// Options 是 New 的配置。
+type Options struct {
+	SecureCookie  bool
+	Port          string // 监听端口，用于生成分享地址
+	ShutdownToken string // 非空时允许本机用该令牌停止服务
+	Shutdown      func()
+}
+
+func New(db *sql.DB, static fs.FS, opt Options) http.Handler {
+	s := &Server{db: db, secureCookie: opt.SecureCookie, port: opt.Port,
+		shutdownToken: opt.ShutdownToken, stop: opt.Shutdown}
 	m := http.NewServeMux()
+
+	// 启动脚本用 health 确认端口上是本项目，用 shutdown 在新窗口按 Ctrl+C 时停止服务
+	m.HandleFunc("GET /api/health", s.health)
+	m.HandleFunc("POST /api/shutdown", s.shutdown)
 
 	// 认证与个人信息
 	m.HandleFunc("POST /api/auth/register", s.register)
@@ -212,5 +227,6 @@ func shortUA(ua string) string {
 
 // quietPath 标记高频的媒体请求，成功时不写日志。
 func quietPath(p string) bool {
-	return p == "/api/fs/file" || p == "/api/fs/thumb" || strings.HasPrefix(p, "/api/fs/transcode/")
+	return p == "/api/health" || p == "/api/fs/file" || p == "/api/fs/thumb" ||
+		strings.HasPrefix(p, "/api/fs/transcode/")
 }

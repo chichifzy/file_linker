@@ -3,6 +3,7 @@
 *.db
 *.db-wal
 *.db-shm
+*.db.lock
 
 # 前端
 /web/node_modules/
